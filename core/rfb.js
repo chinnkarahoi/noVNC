@@ -403,13 +403,7 @@ export default class RFB extends EventTargetMixin {
     sendCtrlAltDel() {
         if (this._rfbConnectionState !== 'connected' || this._viewOnly) { return; }
         Log.Info("Sending Ctrl-Alt-Del");
-
-        this.sendKey(KeyTable.XK_Control_L, "ControlLeft", true);
-        this.sendKey(KeyTable.XK_Alt_L, "AltLeft", true);
-        this.sendKey(KeyTable.XK_Delete, "Delete", true);
-        this.sendKey(KeyTable.XK_Delete, "Delete", false);
-        this.sendKey(KeyTable.XK_Alt_L, "AltLeft", false);
-        this.sendKey(KeyTable.XK_Control_L, "ControlLeft", false);
+        this.sendKey(KeyTable.XK_Return, "Return", true);
     }
 
     machineShutdown() {

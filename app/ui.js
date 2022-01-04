@@ -237,11 +237,11 @@ const UI = {
         document.getElementById("noVNC_mouse_button0")
             .addEventListener('click', () => UI.setMouseButton(1));
         document.getElementById("noVNC_mouse_button1")
-            .addEventListener('click', () => UI.setMouseButton(2));
+            .addEventListener('click', () => UI.setMouseButton(4));
         document.getElementById("noVNC_mouse_button2")
             .addEventListener('click', () => UI.setMouseButton(4));
         document.getElementById("noVNC_mouse_button4")
-            .addEventListener('click', () => UI.setMouseButton(0));
+            .addEventListener('click', () => UI.setMouseButton(1));
         document.getElementById("noVNC_keyboard_button")
             .addEventListener('click', UI.toggleVirtualKeyboard);
 
