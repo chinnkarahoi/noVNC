@@ -1,4 +1,13 @@
 #!/bin/bash
+function shutdown {
+  # Get our process group id
+  PGID=$(ps -o pgid= $$ | grep -o [0-9]*)
+  # Kill process group in a new process group
+  setsid kill -- -$$
+  sleep 5s
+  exit 0
+}
+trap "shutdown" SIGTERM
 export DISPLAY=":0"
 export DPI=${DPI:-96}
 export RESOLUTION=${RESOLUTION:-1280x720}
@@ -15,6 +24,7 @@ echo "gjs:$PASSWD" | sudo chpasswd
 export PULSE_SERVER=127.0.0.1:4713
 sudo pulseaudio --verbose --realtime=true -L "module-native-protocol-tcp auth-ip-acl=127.0.0.0/8 port=4713 auth-anonymous=1" -D
 ffmpeg -y -nostdin -f alsa -i pulse -f mpegts -codec:a mp2 -muxdelay 0.01 udp://localhost:1234 &
+pkill -9 vncproxy
 ./vncproxy --static ./ -vncAddress localhost:5901 &
 
 sudo /etc/init.d/dbus start
