@@ -639,10 +639,18 @@ select:active {
   display: none;
 }
 
+.noVNC_right #noVNC_modifiers {
+  background-color: rgb(92, 92, 92);
+  border: none;
+  padding: 0 10px;
+  transform: translateX(calc(-100vw + 55px));
+}
+
 #noVNC_modifiers {
   background-color: rgb(92, 92, 92);
   border: none;
   padding: 0 10px;
+  transform: translateX(calc(100vw - 55px));
 }
 
 /* Shutdown/Reboot */

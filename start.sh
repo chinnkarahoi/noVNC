@@ -19,7 +19,7 @@ ffmpeg -y -nostdin -f alsa -i pulse -f mpegts -codec:a mp2 -muxdelay 0.01 udp://
 
 sudo /etc/init.d/dbus start
 
-Xtigervnc "$DISPLAY" -desktop gjs -geometry ${RESOLUTION} -dpi ${DPI} -depth 32 -rfbport 5901 -pn -localhost -SecurityTypes None -listen tcp -ac &
+Xtigervnc "$DISPLAY" -desktop gjs -geometry ${RESOLUTION} -dpi ${DPI} -depth 32 -rfbwait 3000000 -rfbport 5901 -pn -localhost -SecurityTypes None -listen tcp -ac &
 plasma_session
 
 wait -n
