@@ -108,6 +108,7 @@
             <input type="image" alt="Extra keys" src="app/images/toggleextrakeys.svg"
                 id="noVNC_toggle_extra_keys_button" class="noVNC_button"
                 title="Show Extra Keys">
+
             <div class="noVNC_vcenter">
             <div id="noVNC_modifiers" class="noVNC_panel">
 
@@ -150,10 +151,26 @@
             </div>
             </div>
 
+            <input type="image" alt="Translator" src="app/images/translator.svg"
+                id="noVNC_toggle_translator" class="noVNC_button"
+                title="Show Translator">
+            <div class="noVNC_vcenter">
+            <div id="noVNC_translator" class="noVNC_panel">
+                <div class="noVNC_heading">
+                    <img alt="" src="app/images/translator.svg"> Translator
+                </div>
+                <textarea id="noVNC_clipboard_text" rows=30></textarea>
+                <br>
+                <input id="noVNC_clipboard_clear_button" type="button"
+                    value="Clear" class="noVNC_submit">
+            </div>
+            </div>
+
+
             <!-- Shutdown/Reboot -->
-            <input type="image" alt="Shutdown/Reboot" src="app/images/power.svg"
+            <input type="image" alt="Shutdown Reboot" src="app/images/power.svg"
                 id="noVNC_power_button" class="noVNC_button"
-                title="Shutdown/Reboot...">
+                title="Shutdown Reboot">
             <div class="noVNC_vcenter">
             <div id="noVNC_power" class="noVNC_panel">
                 <div class="noVNC_heading">

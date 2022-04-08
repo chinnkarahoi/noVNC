@@ -651,6 +651,14 @@ select:active {
   transform: translateX(calc(-100vw + 55px));
 }
 
+#noVNC_translator {
+  background-color: rgb(92, 92, 92);
+  border: none;
+  padding: 0 10px;
+  transform: translateX(calc(80vw - 55px));
+  max-width: calc(15vw);
+}
+
 #noVNC_modifiers {
   background-color: rgb(92, 92, 92);
   border: none;

@@ -283,6 +283,8 @@ const UI = {
     },
 
     addExtraKeysHandlers() {
+        document.getElementById("noVNC_toggle_translator")
+            .addEventListener('click', UI.toggleTranslator);
         document.getElementById("noVNC_toggle_extra_keys_button")
             .addEventListener('click', UI.toggleExtraKeys);
         document.getElementById("noVNC_toggle_ctrl_button")
@@ -1532,6 +1534,32 @@ const UI = {
  * ==============
  *   EXTRA KEYS
  * ------v------*/
+
+    openTranslator() {
+        UI.closeAllPanels();
+        UI.openControlbar();
+
+        document.getElementById('noVNC_translator')
+            .classList.add("noVNC_open");
+        document.getElementById('noVNC_toggle_translator')
+            .classList.add("noVNC_selected");
+    },
+
+    closeTranslator() {
+        document.getElementById('noVNC_translator')
+            .classList.remove("noVNC_open");
+        document.getElementById('noVNC_toggle_translator')
+            .classList.remove("noVNC_selected");
+    },
+
+    toggleTranslator() {
+        if (document.getElementById('noVNC_translator')
+            .classList.contains("noVNC_open")) {
+            UI.closeTranslator();
+        } else  {
+            UI.openTranslator();
+        }
+    },
 
     openExtraKeys() {
         UI.closeAllPanels();

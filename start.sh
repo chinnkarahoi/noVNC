@@ -10,11 +10,13 @@ mkdir -p /home/gjs
 chown gjs /home/gjs
 chown gjs /home/gjs/.wine
 chown gjs /home/gjs/Desktop
-
 echo "gjs:$PASSWD" | sudo chpasswd
+
+pkill -9 kwin_x11
+pkill -9 vncproxy
+
 export PULSE_SERVER=127.0.0.1:4713
 sudo pulseaudio --verbose --realtime=true -L "module-native-protocol-tcp auth-ip-acl=127.0.0.0/8 port=4713 auth-anonymous=1" -D
-pkill -9 vncproxy
 ffmpeg -y -nostdin -f alsa -i pulse -f mpegts -codec:a mp2 -muxdelay 0.01 udp://localhost:1234 &
 
 sudo /etc/init.d/dbus start
