@@ -390,6 +390,11 @@ select:active {
   visibility: hidden;
 }
 
+/* .noVNC_open #noVNC_control_bar_handle { */
+/*   left: -35px; */
+/*   z-index: 1; */
+/* } */
+
 #noVNC_control_bar_handle {
   position: absolute;
   left: -15px;
@@ -452,7 +457,7 @@ select:active {
   max-height: 100vh; /* Chrome is buggy with 100% */
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 0 10px 0 5px;
+  padding: 0 5px 0 5px;
 }
 .noVNC_right #noVNC_control_bar .noVNC_scroll {
   padding: 0 5px 0 10px;
