@@ -337,29 +337,25 @@
         <source src="app/sounds/bell.oga" type="audio/ogg">
         <source src="app/sounds/bell.mp3" type="audio/mpeg">
     </audio>
+    <script type="text/javascript" src="/static/jsmpeg/jsmpeg.min.js"></script>
+    <script>
+        var canvas = document.getElementById('video-canvas');
+        var protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+        var url = protocol + '://' + window.location.hostname + ":" + window.location.port + '/audio';
+        var player = new JSMpeg.Player(url, {
+            canvas: canvas, audioBufferSize: 512 * 1024,
+            autoplay: true, pauseWhenHidden: false,
+        });
+        let isInit = false;
+        document.addEventListener('touchstart', function () {
+            if (isInit) {
+                return
+            }
+            isInit = true;
+            player.audioOut.unlock(function () {
+            });
+        });
+    </script>
  </body>
 </html>
 
-<audio id="noVNC_bell">
-    <source src="app/sounds/bell.oga" type="audio/ogg">
-    <source src="app/sounds/bell.mp3" type="audio/mpeg">
-</audio>
-<script type="text/javascript" src="/static/jsmpeg/jsmpeg.min.js"></script>
-<script>
-    var canvas = document.getElementById('video-canvas');
-    var protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    var url = protocol + '://' + window.location.hostname + ":" + window.location.port + '/audio';
-    var player = new JSMpeg.Player(url, {
-        canvas: canvas, audioBufferSize: 512 * 1024,
-        autoplay: true, pauseWhenHidden: false,
-    });
-    let isInit = false;
-    document.addEventListener('touchstart', function () {
-        if (isInit) {
-            return
-        }
-        isInit = true;
-        player.audioOut.unlock(function () {
-        });
-    });
-</script>
