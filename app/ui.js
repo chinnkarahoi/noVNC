@@ -971,6 +971,12 @@ const UI = {
         request.send("text=" + text);
         request.onload = function() {
             let resp = JSON.parse(this.response)
+            while (raw_ele.firstChild) {
+                raw_ele.removeChild(raw_ele.lastChild);
+            }
+            while (word_ele.firstChild) {
+                word_ele.removeChild(word_ele.lastChild);
+            }
             resp.sents.forEach(function(line) {
                 let tokens = line.tokens
                 let e = document.createElement("div");
@@ -1050,12 +1056,6 @@ const UI = {
                     })
                     e.appendChild(data)
                 })
-                while (raw_ele.firstChild) {
-                    raw_ele.removeChild(raw_ele.lastChild);
-                }
-                while (word_ele.firstChild) {
-                    word_ele.removeChild(word_ele.lastChild);
-                }
                 raw_ele.appendChild(e)
             })
         }
