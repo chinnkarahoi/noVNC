@@ -296,7 +296,7 @@ select:active {
 }
 #noVNC_fallback_error.noVNC_open > div {
   transform: translateY(0);
-  opacity: 1;
+  opacity: 0.8;
 }
 
 #noVNC_fallback_errormsg {
@@ -345,7 +345,7 @@ select:active {
   transform: translateX(0);
 }
 :root.noVNC_connected #noVNC_control_bar_anchor.noVNC_idle {
-  opacity: 0.8;
+  opacity: 1;
 }
 #noVNC_control_bar_anchor.noVNC_right {
   left: auto;
@@ -488,7 +488,7 @@ select:active {
 }
 #noVNC_control_bar_hint.noVNC_active {
   visibility: visible;
-  opacity: 1;
+  opacity: 0.8;
   transition-delay: 0.2s;
   transform: translateY(-50%) scale(1);
 }
@@ -554,7 +554,7 @@ select:active {
 }
 .noVNC_panel.noVNC_open {
   visibility: visible;
-  opacity: 1;
+  opacity: 0.8;
   transform: translateX(75px);
 }
 .noVNC_right .noVNC_vcenter {
@@ -651,15 +651,18 @@ select:active {
   transform: translateX(calc(-100vw + 55px));
 }
 
-#noVNC_translator_text {
-}
-
 .highlight {
   color: green;
 }
 
 .content-word {
-  background-color: white;
+}
+
+#noVNC_translator_raw_text {
+  max-height: 40vh;
+  display: inline-block;
+  overflow-y: scroll;
+  font-size: 13px;
 }
 
 #noVNC_translator {
@@ -778,7 +781,7 @@ select:active {
 #noVNC_status.noVNC_open {
   transform: translateY(0);
   visibility: visible;
-  opacity: 1;
+  opacity: 0.8;
 }
 
 #noVNC_status::before {
@@ -823,7 +826,7 @@ select:active {
 #noVNC_connect_dlg.noVNC_open {
   transform: scale(1, 1);
   visibility: visible;
-  opacity: 1;
+  opacity: 0.8;
 }
 #noVNC_connect_dlg .noVNC_logo {
   transition: 0.5s ease-in-out;

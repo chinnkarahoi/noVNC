@@ -960,7 +960,7 @@ const UI = {
 
     translatorReceive(e) {
         const text = e.detail.text
-        let ele = document.getElementById('noVNC_translator_text')
+        let ele = document.getElementById('noVNC_translator_raw_text')
 
         let request = new XMLHttpRequest()
         request.open("POST", "https://jamdict.karahoi.com/api/parse/doc/");
