@@ -959,7 +959,32 @@ const UI = {
     },
 
     translatorReceive(e) {
-        document.getElementById('noVNC_translator_text').value = e.detail.text;
+        const text = e.detail.text
+        let ele = document.getElementById('noVNC_translator_text')
+
+        let request = new XMLHttpRequest()
+        request.open("POST", "https://jamdict.karahoi.com/api/parse/doc/");
+        request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded')
+        request.send("text=" + text);
+        request.onload = function() {
+            let resp = JSON.parse(this.response)
+            resp.sents.forEach((line) => {
+                let tokens = line.tokens
+                let e = document.createElement("div");
+                tokens.forEach((token) => {
+                    var data = document.createElement("span");
+                    if ('furi' in token) {
+                        data.innerHTML = token.furi
+                    } else {
+                        data.innerHTML = token.text
+                    }
+                    e.appendChild(data)
+                })
+                ele.innerHTML = ''
+                ele.appendChild(e)
+                console.log(tokens)
+            })
+        }
     },
 
     clipboardReceive(e) {

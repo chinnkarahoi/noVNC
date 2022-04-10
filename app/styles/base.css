@@ -651,12 +651,22 @@ select:active {
   transform: translateX(calc(-100vw + 55px));
 }
 
+#noVNC_translator_text {
+}
+
 #noVNC_translator {
-  background-color: rgb(92, 92, 92);
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  margin: 2px;
+  border: 1px solid rgb(192, 192, 192);
+  border-radius: 5px;
   border: none;
-  padding: 0 10px;
   transform: translateX(calc(80vw - 55px));
-  max-width: calc(15vw);
+  width: 20vw;
+  height: 80vh;
+  padding: 1px 1px 1px 1px;
+  background: linear-gradient(to top, rgb(255, 255, 255) 80%, rgb(240, 240, 240));
+  color: black;
 }
 
 #noVNC_modifiers {
@@ -664,6 +674,7 @@ select:active {
   border: none;
   padding: 0 10px;
   transform: translateX(calc(100vw - 55px));
+  z-index: 1;
 }
 
 /* Shutdown/Reboot */
