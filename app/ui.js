@@ -968,21 +968,50 @@ const UI = {
         request.send("text=" + text);
         request.onload = function() {
             let resp = JSON.parse(this.response)
-            resp.sents.forEach((line) => {
+            resp.sents.forEach(function(line) {
                 let tokens = line.tokens
                 let e = document.createElement("div");
                 tokens.forEach((token) => {
                     var data = document.createElement("span");
+                    if (['記号', '助詞'].indexOf(token.pos.substring(0, 2)) >= 0) {
+                        token.ignore = true;
+                    }
+                    else if (['助動詞'].indexOf(token.pos) >= 0) {
+                        token.ignore = true;
+                    }
+                    data.classList.add('content-word')
+                    if (!token.ignore) {
+                        data.classList.add('highlight')
+                    }
                     if ('furi' in token) {
                         data.innerHTML = token.furi
                     } else {
                         data.innerHTML = token.text
                     }
+                    if ('lemma' in token) {
+                        data.query = token.lemma
+                    } else {
+                        data.query = token.text
+                    }
+                    data.query = line.text.substr(token.cfrom, 20)
+                    // data.query = text.substring(token.cfrom)
+                    data.addEventListener("click", function() {
+                        // console.log(this.token)
+                        let request = new XMLHttpRequest()
+                        request.open("POST", "https://jamdict.karahoi.com/api/jamdict/search/");
+                        request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded')
+                        request.send("query=" + this.query);
+                        request.onload = function() {
+                            let resp = JSON.parse(this.response)
+                            console.log(resp)
+                        }
+                    })
                     e.appendChild(data)
                 })
-                ele.innerHTML = ''
+                while (ele.firstChild) {
+                    ele.removeChild(ele.lastChild);
+                }
                 ele.appendChild(e)
-                console.log(tokens)
             })
         }
     },

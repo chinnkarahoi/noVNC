@@ -654,6 +654,14 @@ select:active {
 #noVNC_translator_text {
 }
 
+.highlight {
+  color: green;
+}
+
+.content-word {
+  background-color: white;
+}
+
 #noVNC_translator {
   -webkit-appearance: none;
   -moz-appearance: none;
