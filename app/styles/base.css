@@ -655,19 +655,37 @@ select:active {
   color: green;
 }
 
+:root:not(.noVNC_touch) #noVNC_translator{
+  font-size: 20px;
+}
+
 .content-word {
 }
 
+#noVNC_translator_word_text {
+  width: 20vw;
+  max-height: 30vh;
+  display: inline-block;
+  /* overflow-y: scroll; */
+}
+
 #noVNC_translator_raw_text {
+  width: 20vw;
   max-height: 40vh;
   display: inline-block;
-  overflow-y: scroll;
-  font-size: 13px;
+  /* overflow-y: scroll; */
+}
+
+dl, ol, ul {
+  margin-top: 0;
+  margin-bottom: 2rem;
+  padding-left: 2rem;
 }
 
 #noVNC_translator {
   -webkit-appearance: none;
   -moz-appearance: none;
+  font-size: 12px;
   margin: 2px;
   border: 1px solid rgb(192, 192, 192);
   border-radius: 5px;

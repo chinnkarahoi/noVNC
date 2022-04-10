@@ -116,6 +116,8 @@ const UI = {
             UI.openConnectPanel();
         }
 
+        UI.openExtraKeys()
+        UI.openTranslator()
         return Promise.resolve(UI.rfb);
     },
 
@@ -960,7 +962,8 @@ const UI = {
 
     translatorReceive(e) {
         const text = e.detail.text
-        let ele = document.getElementById('noVNC_translator_raw_text')
+        let raw_ele = document.getElementById('noVNC_translator_raw_text')
+        let word_ele = document.getElementById('noVNC_translator_word_text')
 
         let request = new XMLHttpRequest()
         request.open("POST", "https://jamdict.karahoi.com/api/parse/doc/");
@@ -972,7 +975,7 @@ const UI = {
                 let tokens = line.tokens
                 let e = document.createElement("div");
                 tokens.forEach((token) => {
-                    var data = document.createElement("span");
+                    let data = document.createElement("span");
                     if (['記号', '助詞'].indexOf(token.pos.substring(0, 2)) >= 0) {
                         token.ignore = true;
                     }
@@ -1003,15 +1006,49 @@ const UI = {
                         request.send("query=" + this.query);
                         request.onload = function() {
                             let resp = JSON.parse(this.response)
-                            console.log(resp)
+                            word_ele.innerHTML = ''
+                            resp.entries.forEach(function(entry){
+                                let entry_span = document.createElement("div");
+                                entry.kanji.forEach(function(kanji, index) {
+                                    console.log(kanji)
+                                    if (index != 0) {
+                                        entry_span.innerHTML += ", "
+                                    }
+                                    entry_span.innerHTML += `<span style="color:#007bff;">${kanji.text}</span>`
+                                })
+
+                                entry_span.innerHTML += "<span> </span>"
+
+                                entry.kana.forEach(function(kana, index) {
+                                    if (index != 0) {
+                                        entry_span.innerHTML += ", "
+                                    }
+                                    entry_span.innerHTML += `<span style="color:red;">${kana.text}</span>`
+                                })
+
+                                word_ele.appendChild(entry_span)
+
+                                let sense_span = document.createElement("ol");
+                                entry.senses.forEach(function(sense, index) {
+                                    let glosses = ""
+                                    sense.SenseGloss.forEach(function(gloss){
+                                        if (glosses != "") {
+                                            glosses += ", "
+                                        }
+                                        glosses += `<span>${gloss.text}</span>`
+                                    })
+                                    sense_span.innerHTML += `<li>${glosses}</li>`
+                                })
+                                word_ele.appendChild(sense_span)
+                            })
                         }
                     })
                     e.appendChild(data)
                 })
-                while (ele.firstChild) {
-                    ele.removeChild(ele.lastChild);
+                while (raw_ele.firstChild) {
+                    raw_ele.removeChild(raw_ele.lastChild);
                 }
-                ele.appendChild(e)
+                raw_ele.appendChild(e)
             })
         }
     },
