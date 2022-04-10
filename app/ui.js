@@ -1048,6 +1048,9 @@ const UI = {
                 while (raw_ele.firstChild) {
                     raw_ele.removeChild(raw_ele.lastChild);
                 }
+                while (word_ele.firstChild) {
+                    word_ele.removeChild(word_ele.lastChild);
+                }
                 raw_ele.appendChild(e)
             })
         }
