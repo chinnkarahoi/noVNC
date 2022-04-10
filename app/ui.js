@@ -989,7 +989,12 @@ const UI = {
                     if ('furi' in token) {
                         data.innerHTML = token.furi
                     } else {
-                        data.innerHTML = token.text
+                        let english = /^[A-Za-z]*$/
+                        let text = token.text
+                        if (english.test(text)) {
+                            text += " "
+                        }
+                        data.innerHTML = text
                     }
                     if ('lemma' in token) {
                         data.query = token.lemma
@@ -997,7 +1002,7 @@ const UI = {
                         data.query = token.text
                     }
                     data.query = line.text.substr(token.cfrom, 20)
-                    // data.query = text.substring(token.cfrom)
+
                     data.addEventListener("click", function() {
                         // console.log(this.token)
                         let request = new XMLHttpRequest()
