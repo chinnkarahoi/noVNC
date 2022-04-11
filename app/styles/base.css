@@ -274,7 +274,7 @@ select:active {
   visibility: hidden;
 }
 #noVNC_fallback_error.noVNC_open {
-  visibility: visible;
+  /* visibility: visible; */
 }
 
 #noVNC_fallback_error > div {
