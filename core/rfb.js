@@ -37,7 +37,7 @@ const DISCONNECT_TIMEOUT = 3;
 const DEFAULT_BACKGROUND = 'rgb(40, 40, 40)';
 
 // Minimum wait (ms) between two mouse moves
-const MOUSE_MOVE_DELAY = 17;
+const MOUSE_MOVE_DELAY = 0;
 
 // Extended clipboard pseudo-encoding formats
 const extendedClipboardFormatText   = 1;
