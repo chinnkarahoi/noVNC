@@ -4,7 +4,6 @@ export DPI=${DPI:-96}
 export RESOLUTION=${RESOLUTION:-1280x720}
 export LC_ALL=en_US.UTf-8
 export TZ=Asia/Shanghai
-export XDG_RUNTIME_DIR='/home/gjs/.config'
 
 function shutdown {
   pkill -9 kwin_x11
