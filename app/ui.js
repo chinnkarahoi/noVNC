@@ -966,7 +966,7 @@ const UI = {
         let word_ele = document.getElementById('noVNC_translator_word_text')
 
         let request = new XMLHttpRequest()
-        request.open("POST", "https://jamdict.karahoi.com/api/parse/doc/");
+        request.open("POST", "/api/parse/doc/");
         request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded')
         request.send("text=" + text);
         request.onload = function() {
@@ -1012,7 +1012,7 @@ const UI = {
                     data.addEventListener("click", function() {
                         // console.log(this.token)
                         let request = new XMLHttpRequest()
-                        request.open("POST", "https://jamdict.karahoi.com/api/jamdict/search/");
+                        request.open("POST", "/api/jamdict/search/");
                         request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded')
                         request.send("query=" + this.query);
                         request.onload = function() {
