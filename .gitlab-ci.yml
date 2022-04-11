@@ -1,0 +1,100 @@
+image: karahoi/toolbox:v1.0.0
+
+variables:
+  DOCKERHUB: karahoi
+
+stages:
+  - chore
+  - prepare
+  - build
+  - deploy
+  - job
+
+default:
+  before_script:
+    - mkdir -p /root/.config
+    - mkdir -p /root/.ssh
+    - mkdir -p /root/.docker
+    - cp /runner/.config/hub /root/.config/hub
+    - cp /runner/.ssh/* /root/.ssh/
+    - cp /runner/.docker/config.json /root/.docker/config.json
+    - chmod -R 600 /root/.ssh
+
+.docker_build_script:
+  script:
+    - echo $DOCKERHUB
+    - echo $CACHE_PATH
+    - echo $BUILD_CONTEXT
+    - echo $CI_COMMIT_SHORT_SHA
+    - pwd
+    - ls -la
+    - git status
+    - TAG=$(git describe --tags --abbrev=0) || TAG=v1.0.0
+    - DATE=$(date +"%Y-%m-%d")
+    - echo $DOCKERHUB/$IMAGE_NAME:$TAG
+    - ( cd $BUILD_CONTEXT && docker build . -t $DOCKERHUB/$IMAGE_NAME:latest )
+    - docker tag $DOCKERHUB/$IMAGE_NAME:latest $DOCKERHUB/$IMAGE_NAME:$TAG
+    - docker tag $DOCKERHUB/$IMAGE_NAME:latest $DOCKERHUB/$IMAGE_NAME:$DATE
+    - docker push $DOCKERHUB/$IMAGE_NAME:latest
+    - |
+      [ -n "$CI_COMMIT_SHORT_SHA" ] && {
+        docker tag $DOCKERHUB/$IMAGE_NAME:latest $DOCKERHUB/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA
+        docker push $DOCKERHUB/$IMAGE_NAME:$CI_COMMIT_SHORT_SHA &
+      }
+    - docker push $DOCKERHUB/$IMAGE_NAME:$TAG &
+    - docker push $DOCKERHUB/$IMAGE_NAME:$DATE &
+    - wait
+
+chore:debug:
+  before_script:
+    - ""
+  stage: chore
+  script:
+    - echo https://dashboard.karahoi.com/#/shell/gitlab/$HOSTNAME/build?namespace=gitlab
+    - sleep 300
+  rules:
+    - when: manual
+      allow_failure: true
+
+chore:sync:github:
+  stage: chore
+  needs: []
+  script:
+    - pwd
+    - ls
+    - docker images
+    - echo $CI_COMMIT_SHORT_SHA
+    - echo $CI_COMMIT_TAG
+    - echo $CI_COMMIT_TITLE
+    - echo $CI_COMMIT_BRANCH
+    - kubectl get all
+    - export GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no'
+    - git remote remove origin || true
+    - hub create -p
+    - git branch -d $CI_COMMIT_BRANCH || true
+    - git checkout -b $CI_COMMIT_BRANCH
+    - git push -f origin $CI_COMMIT_BRANCH
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+  allow_failure: true
+
+build:nas:novnc:
+  extends: .docker_build_script
+  variables:
+    IMAGE_NAME: novnc
+    BUILD_CONTEXT: .
+  stage: build
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_COMMIT_TAG =~ /^v?\d+\.\d+\.\d+$/
+    - when: manual
+      allow_failure: true
+
+deploy:nas:novnc:
+  stage: deploy
+  script:
+    - kubectl -n nas rollout restart deploy/vnc
+    - kubectl -n nas rollout status --timeout=1h deploy/vnc
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+      when: always
