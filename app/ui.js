@@ -117,7 +117,7 @@ const UI = {
         }
 
         UI.openExtraKeys()
-        UI.openTranslator()
+        // UI.openTranslator()
         return Promise.resolve(UI.rfb);
     },
 
