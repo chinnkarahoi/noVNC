@@ -1,3 +1,4 @@
 #!/bin/bash
 cd /app || exit 1
-/app/vncproxy --static /app -vncAddress localhost:5901
+VNC_ADDRESS=${VNC_ADDRESS:-localhost:5900}
+/app/vncproxy --static /app -vncAddress $VNC_ADDRESS
