@@ -8,7 +8,6 @@ RUN go mod download
 COPY proxy.go /app
 RUN go mod tidy
 RUN go build .
-RUN exit 1
 
 FROM alpine:3.15
 RUN apk add --no-cache bash
