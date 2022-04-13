@@ -97,6 +97,3 @@ deploy:nas:novnc:
     - kubectl -n nas rollout status --timeout=1h deploy/vnc-http
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
-      when: always
-  needs:
-    - build:nas:novnc
