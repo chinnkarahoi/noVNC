@@ -1,6 +1,6 @@
 module vncproxy
 
-go 1.18
+go 1.17
 
 require (
 	golang.design/x/clipboard v0.6.2
