@@ -16,6 +16,7 @@ import keysyms from "../core/input/keysymdef.js";
 import Keyboard from "../core/input/keyboard.js";
 import RFB from "../core/rfb.js";
 import * as WebUtil from "./webutil.js";
+import fallbackCopyTextToClipboard from "./clipboard.js"
 
 const PAGE_TITLE = "noVNC";
 
@@ -960,8 +961,7 @@ const UI = {
         }
     },
 
-    translatorReceive(e) {
-        const text = e.data
+    translatorReceive(text) {
         let raw_ele = document.getElementById('noVNC_translator_raw_text')
         let word_ele = document.getElementById('noVNC_translator_word_text')
 
@@ -1140,7 +1140,10 @@ const UI = {
         let protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
         let clipboard_url = protocol + '://' + window.location.hostname + ":" + window.location.port + '/clipboard';
         let clip_ws = new WebSocket(clipboard_url)
-        clip_ws.onmessage = UI.translatorReceive
+        clip_ws.onmessage = function(e) {
+            UI.translatorReceive(e.data)
+            fallbackCopyTextToClipboard(e.data)
+        }
 
         UI.rfb = new RFB(document.getElementById('noVNC_container'), url,
                          { shared: UI.getSetting('shared'),
