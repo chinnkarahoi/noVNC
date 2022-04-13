@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -30,8 +31,12 @@ func main() {
 	})
 
 	http.Handle("/clipboard", websocket.Handler(func(wsconn *websocket.Conn) {
-		defer wsconn.Close()
 		log.Println("CLIPBOARD OPEN")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer func() {
+			cancel()
+			wsconn.Close()
+		}()
 		for {
 			log.Println("connecting to clipboard")
 			err := clipboard.Init()
@@ -42,10 +47,14 @@ func main() {
 				break
 			}
 		}
-		ch := clipboard.Watch(wsconn.Request().Context(), clipboard.FmtText)
+		ch := clipboard.Watch(ctx, clipboard.FmtText)
 		wsconn.PayloadType = websocket.TextFrame
 		for data := range ch {
-			wsconn.Write(data)
+			_, err := wsconn.Write(data)
+			if err != nil {
+				log.Println(err)
+				break
+			}
 		}
 		log.Println("CLIPBOARD CLOSED")
 	}))
