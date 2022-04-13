@@ -961,7 +961,7 @@ const UI = {
     },
 
     translatorReceive(e) {
-        const text = e.detail.text
+        const text = e.data
         let raw_ele = document.getElementById('noVNC_translator_raw_text')
         let word_ele = document.getElementById('noVNC_translator_word_text')
 
@@ -1137,6 +1137,11 @@ const UI = {
         }
         url += '/' + path;
 
+        let protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+        let clipboard_url = protocol + '://' + window.location.hostname + ":" + window.location.port + '/clipboard';
+        let clip_ws = new WebSocket(clipboard_url)
+        clip_ws.onmessage = UI.translatorReceive
+
         UI.rfb = new RFB(document.getElementById('noVNC_container'), url,
                          { shared: UI.getSetting('shared'),
                            repeaterID: UI.getSetting('repeaterID'),
@@ -1147,7 +1152,6 @@ const UI = {
         UI.rfb.addEventListener("securityfailure", UI.securityFailed);
         UI.rfb.addEventListener("capabilities", UI.updatePowerButton);
         UI.rfb.addEventListener("clipboard", UI.clipboardReceive);
-        UI.rfb.addEventListener("clipboard", UI.translatorReceive);
         UI.rfb.addEventListener("bell", UI.bell);
         UI.rfb.addEventListener("desktopname", UI.updateDesktopName);
         UI.rfb.clipViewport = UI.getSetting('view_clip');
