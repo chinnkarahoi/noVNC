@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 
+	"golang.design/x/clipboard"
 	"golang.org/x/net/websocket"
 )
 
@@ -19,6 +20,7 @@ func main() {
 	udpAddress := flag.String("udpAddress", ":1234", "Jsmpeg Udp Server port")
 	vncAddress := flag.String("vncAddress", "localhost:5900", "Vnc Server port")
 	flag.Parse()
+
 	passwd := os.Getenv("VNC_PASSWD")
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Add("Location",
@@ -26,6 +28,28 @@ func main() {
 		)
 		writer.WriteHeader(302)
 	})
+
+	http.Handle("/clipboard", websocket.Handler(func(wsconn *websocket.Conn) {
+		defer wsconn.Close()
+		log.Println("CLIPBOARD OPEN")
+		for {
+			log.Println("connecting to clipboard")
+			err := clipboard.Init()
+			if err != nil {
+				log.Println(err)
+			} else {
+				log.Println("connected to clipboard")
+				break
+			}
+		}
+		ch := clipboard.Watch(wsconn.Request().Context(), clipboard.FmtText)
+		wsconn.PayloadType = websocket.TextFrame
+		for data := range ch {
+			wsconn.Write(data)
+		}
+		log.Println("CLIPBOARD CLOSED")
+	}))
+
 	http.Handle("/websockify", websocket.Handler(func(wsconn *websocket.Conn) {
 		defer wsconn.Close()
 		var d net.Dialer
