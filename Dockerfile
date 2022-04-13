@@ -10,7 +10,7 @@ RUN go mod tidy
 RUN go build .
 
 FROM alpine:3.15
-RUN apk add --no-cache bash
+RUN apk add --no-cache bash libx11 libx11-dev
 COPY . /app
 COPY --from=builder /app/vncproxy /app/vncproxy
 ENTRYPOINT bash /app/entrypoint.sh
