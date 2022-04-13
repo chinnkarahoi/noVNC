@@ -9,6 +9,7 @@ function shutdown {
   pkill -9 kwin_x11
   pkill -9 vncproxy
   pkill -9 baloo_file
+  pkill -9 plasma_session
 }
 shutdown
 trap "shutdown" INT EXIT
