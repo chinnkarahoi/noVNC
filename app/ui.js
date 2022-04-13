@@ -1141,8 +1141,8 @@ const UI = {
         let clipboard_url = protocol + '://' + window.location.hostname + ":" + window.location.port + '/clipboard';
         let clip_ws = new WebSocket(clipboard_url)
         clip_ws.onmessage = function(e) {
-            UI.translatorReceive(e.data)
             fallbackCopyTextToClipboard(e.data)
+            UI.translatorReceive(e.data)
         }
 
         UI.rfb = new RFB(document.getElementById('noVNC_container'), url,
