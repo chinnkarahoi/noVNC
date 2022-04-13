@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 
 	"golang.org/x/net/websocket"
 )
@@ -18,8 +19,11 @@ func main() {
 	udpAddress := flag.String("udpAddress", ":1234", "Jsmpeg Udp Server port")
 	vncAddress := flag.String("vncAddress", "localhost:5900", "Vnc Server port")
 	flag.Parse()
+	passwd := os.Getenv("VNC_PASSWD")
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Add("Location", "/static/vnc.html?autoconnect=true&resize=scale")
+		writer.Header().Add("Location",
+			fmt.Sprintf("/static/vnc.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=1000&password=%v", passwd),
+		)
 		writer.WriteHeader(302)
 	})
 	http.Handle("/websockify", websocket.Handler(func(wsconn *websocket.Conn) {
