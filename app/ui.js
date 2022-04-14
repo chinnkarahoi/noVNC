@@ -301,7 +301,7 @@ const UI = {
         document.getElementById("noVNC_send_esc_button")
             .addEventListener('click', UI.sendEsc);
         document.getElementById("noVNC_send_ctrl_alt_del_button")
-            .addEventListener('click', UI.sendCtrlAltDel);
+            .addEventListener('click', UI.sendReturn);
     },
 
     addMachineHandlers() {
@@ -1704,6 +1704,10 @@ const UI = {
 
     sendTab() {
         UI.sendKey(KeyTable.XK_Tab, "Tab");
+    },
+
+    sendReturn() {
+        UI.sendKey(KeyTable.XK_Return, "Return");
     },
 
     toggleCtrl() {
