@@ -49,12 +49,17 @@ func main() {
 		}
 		ch := clipboard.Watch(ctx, clipboard.FmtText)
 		wsconn.PayloadType = websocket.TextFrame
+		count := 0
 		for data := range ch {
 			_, err := wsconn.Write(data)
 			if err != nil {
 				log.Println(err)
+				count += 1
+			}
+			if count > 5 {
 				break
 			}
+			count = 0
 		}
 		log.Println("CLIPBOARD CLOSED")
 	}))
