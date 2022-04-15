@@ -60,7 +60,7 @@ func main() {
 					break
 				}
 			}
-			if sended == 1 {
+			if sended == 0 {
 				break
 			}
 		}
