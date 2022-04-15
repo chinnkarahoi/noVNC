@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"time"
 
 	"golang.design/x/clipboard"
 	"golang.org/x/net/websocket"
@@ -49,18 +50,35 @@ func main() {
 		}
 		ch := clipboard.Watch(ctx, clipboard.FmtText)
 		wsconn.PayloadType = websocket.TextFrame
-		for data := range ch {
-			sended := 0
-			for i := 0; i < 5; i++ {
-				_, err := wsconn.Write(data)
+		// keep alive
+		go func() {
+			for {
+				_, err := wsconn.Write([]byte{65})
 				if err != nil {
 					log.Println(err)
-				} else {
-					sended = 1
 					break
 				}
+				time.Sleep(time.Second)
 			}
-			if sended == 0 {
+		}()
+		go func() {
+			data := make([]byte, 65536)
+			for {
+				n, err := wsconn.Read(data)
+				if err != nil {
+					log.Println(err)
+					break
+				}
+				if n != 1 {
+					clipboard.Write(clipboard.FmtText, data)
+				}
+			}
+			wsconn.Close()
+		}()
+		for data := range ch {
+			_, err := wsconn.Write(data)
+			if err != nil {
+				log.Println(err)
 				break
 			}
 		}
