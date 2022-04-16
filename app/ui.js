@@ -118,7 +118,23 @@ const UI = {
         }
 
         UI.openExtraKeys()
+
+        let protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+        let clipboard_url = protocol + '://' + window.location.hostname + ":" + window.location.port + '/clipboard';
+        let clip_ws = new WebSocket(clipboard_url)
+        clip_ws.onmessage = function(e) {
+            // fallbackCopyTextToClipboard(e.data)
+            if (e.data.length > 1) {
+                UI.translatorReceive(e.data)
+            }
+            console.log(e.data)
+        }
+        var intervalId = window.setInterval(function(){
+            /// call your function here
+        }, 5000);
         // UI.openTranslator()
+
+
         return Promise.resolve(UI.rfb);
     },
 
@@ -1136,20 +1152,6 @@ const UI = {
             url += ':' + port;
         }
         url += '/' + path;
-
-        let protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-        let clipboard_url = protocol + '://' + window.location.hostname + ":" + window.location.port + '/clipboard';
-        let clip_ws = new WebSocket(clipboard_url)
-        clip_ws.onmessage = function(e) {
-            // fallbackCopyTextToClipboard(e.data)
-            if (e.data.length > 1) {
-                UI.translatorReceive(e.data)
-            }
-            console.log(e.data)
-        }
-        var intervalId = window.setInterval(function(){
-            /// call your function here
-        }, 5000);
 
         UI.rfb = new RFB(document.getElementById('noVNC_container'), url,
                          { shared: UI.getSetting('shared'),
