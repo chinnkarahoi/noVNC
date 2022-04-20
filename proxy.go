@@ -38,16 +38,16 @@ func main() {
 			cancel()
 			wsconn.Close()
 		}()
-		for {
-			log.Println("connecting to clipboard")
-			err := clipboard.Init()
-			if err != nil {
-				log.Println(err)
-			} else {
-				log.Println("connected to clipboard")
-				break
-			}
-		}
+		// for {
+		// 	log.Println("connecting to clipboard")
+		// 	err := clipboard.Init()
+		// 	if err != nil {
+		// 		log.Println(err)
+		// 	} else {
+		// 		log.Println("connected to clipboard")
+		// 		break
+		// 	}
+		// }
 		ch := clipboard.Watch(ctx, clipboard.FmtText)
 		wsconn.PayloadType = websocket.TextFrame
 		// keep alive
