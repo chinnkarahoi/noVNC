@@ -680,6 +680,17 @@ dl, ol, ul {
   margin-top: 0;
   margin-bottom: 2rem;
   padding-left: 2rem;
+  list-style: none;
+  counter-reset: my-awesome-counter;
+}
+
+li {
+  counter-increment: my-awesome-counter;
+}
+li::before {
+  content: counter(my-awesome-counter) ". ";
+  color: red;
+  font-weight: bold;
 }
 
 #noVNC_translator {

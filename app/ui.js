@@ -1008,10 +1008,10 @@ const UI = {
                     if (!token.ignore) {
                         data.classList.add('highlight')
                     }
+                    let english = /^[A-Za-z]*$/
                     if ('furi' in token) {
                         data.innerHTML = token.furi
                     } else {
-                        let english = /^[A-Za-z]*$/
                         let text = token.text
                         if (english.test(text)) {
                             text += " "
@@ -1023,53 +1023,102 @@ const UI = {
                     } else {
                         data.query = token.text
                     }
-                    data.query = line.text.substr(token.cfrom, 20)
+                    if (english.test(token.text)) {
+                        data.query = token.text
+                        data.isEnglish = true
+                    } else {
+                        data.query = line.text.substr(token.cfrom, 20)
+                    }
 
-                    data.addEventListener("click", function() {
-                        // console.log(this.token)
-                        let request = new XMLHttpRequest()
-                        request.open("POST", "/api/jamdict/search/");
-                        request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded')
-                        request.send("query=" + this.query);
-                        request.onload = function() {
-                            let resp = JSON.parse(this.response)
-                            word_ele.innerHTML = ''
-                            resp.entries.forEach(function(entry){
+                    if (data.isEnglish) {
+                        data.addEventListener("click", function() {
+                            let request = new XMLHttpRequest()
+                            request.open("GET", `https://ecdict.karahoi.com/api/ecdict/${this.query}`);
+                            request.send();
+                            request.onload = function() {
+                                let resp = JSON.parse(this.response)
+                                word_ele.innerHTML = ''
                                 let entry_span = document.createElement("div");
-                                entry.kanji.forEach(function(kanji, index) {
-                                    console.log(kanji)
-                                    if (index != 0) {
-                                        entry_span.innerHTML += ", "
-                                    }
-                                    entry_span.innerHTML += `<span style="color:#007bff;">${kanji.text}</span>`
-                                })
 
+                                if (!resp) {
+                                    entry_span.innerHTML += `<span">not found</span><br>`
+                                    word_ele.appendChild(entry_span)
+                                    return
+                                }
+
+                                entry_span.innerHTML += `<span style="color:#007bff;">${resp.word}</span>`
                                 entry_span.innerHTML += "<span> </span>"
+                                entry_span.innerHTML += `<span style="color:red;">${resp.phonetic}</span>`
+                                entry_span.innerHTML += "<span> </span>"
+                                entry_span.innerHTML += `<span style="color:orange;">${resp.frq}</span>`
+                                entry_span.innerHTML += "<span> </span>"
+                                entry_span.innerHTML += `<span style="color:orange;">${resp.bnc}</span>`
 
-                                entry.kana.forEach(function(kana, index) {
-                                    if (index != 0) {
-                                        entry_span.innerHTML += ", "
-                                    }
-                                    entry_span.innerHTML += `<span style="color:red;">${kana.text}</span>`
-                                })
-
+                                entry_span.innerHTML += `<br>`
                                 word_ele.appendChild(entry_span)
 
-                                let sense_span = document.createElement("ol");
-                                entry.senses.forEach(function(sense, index) {
-                                    let glosses = ""
-                                    sense.SenseGloss.forEach(function(gloss){
-                                        if (glosses != "") {
-                                            glosses += ", "
-                                        }
-                                        glosses += `<span>${gloss.text}</span>`
-                                    })
-                                    sense_span.innerHTML += `<li>${glosses}</li>`
+                                let translation_span = document.createElement("ol");
+                                resp.translation.split('\n').forEach(function(text) {
+                                    translation_span.innerHTML += `<li><span>${text}</span></li>`
                                 })
-                                word_ele.appendChild(sense_span)
-                            })
-                        }
-                    })
+                                word_ele.appendChild(translation_span)
+
+                                let definition_span = document.createElement("ol");
+                                resp.definition.split('\n').forEach(function(text) {
+                                    definition_span.innerHTML += `<li><span>${text}</span></li>`
+                                })
+                                word_ele.appendChild(definition_span)
+
+                                console.log(resp)
+                            }
+                        })
+                    } else {
+                        data.addEventListener("click", function() {
+                            let request = new XMLHttpRequest()
+                            request.open("POST", "/api/jamdict/search/");
+                            request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded')
+                            request.send("query=" + this.query);
+                            request.onload = function() {
+                                let resp = JSON.parse(this.response)
+                                word_ele.innerHTML = ''
+                                resp.entries.forEach(function(entry){
+                                    let entry_span = document.createElement("div");
+                                    entry.kanji.forEach(function(kanji, index) {
+                                        console.log(kanji)
+                                        if (index != 0) {
+                                            entry_span.innerHTML += ", "
+                                        }
+                                        entry_span.innerHTML += `<span style="color:#007bff;">${kanji.text}</span>`
+                                    })
+
+                                    entry_span.innerHTML += "<span> </span>"
+
+                                    entry.kana.forEach(function(kana, index) {
+                                        if (index != 0) {
+                                            entry_span.innerHTML += ", "
+                                        }
+                                        entry_span.innerHTML += `<span style="color:red;">${kana.text}</span>`
+                                    })
+
+                                    word_ele.appendChild(entry_span)
+
+                                    let sense_span = document.createElement("ol");
+                                    entry.senses.forEach(function(sense, index) {
+                                        let glosses = ""
+                                        sense.SenseGloss.forEach(function(gloss){
+                                            if (glosses != "") {
+                                                glosses += ", "
+                                            }
+                                            glosses += `<span>${gloss.text}</span>`
+                                        })
+                                        sense_span.innerHTML += `<li>${glosses}</li>`
+                                    })
+                                    word_ele.appendChild(sense_span)
+                                })
+                            }
+                        })
+                    }
+
                     e.appendChild(data)
                 })
                 raw_ele.appendChild(e)
