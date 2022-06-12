@@ -1,3 +1,3 @@
 #!/bin/bash
-go build .
+go build -mod=mod .
 ./vncproxy --static ./ -vncAddress localhost:5900
