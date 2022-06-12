@@ -117,7 +117,7 @@ const UI = {
             UI.openConnectPanel();
         }
 
-        UI.openExtraKeys()
+        // UI.openExtraKeys()
 
         let protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
         let clipboard_url = protocol + '://' + window.location.hostname + ":" + window.location.port + '/clipboard';
@@ -132,7 +132,7 @@ const UI = {
         var intervalId = window.setInterval(function(){
             /// call your function here
         }, 5000);
-        // UI.openTranslator()
+        UI.openTranslator()
 
 
         return Promise.resolve(UI.rfb);
