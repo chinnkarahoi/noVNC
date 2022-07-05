@@ -132,7 +132,7 @@ const UI = {
         var intervalId = window.setInterval(function(){
             /// call your function here
         }, 5000);
-        UI.openTranslator()
+        // UI.openTranslator()
 
 
         return Promise.resolve(UI.rfb);
