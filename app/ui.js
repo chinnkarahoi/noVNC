@@ -1033,7 +1033,7 @@ const UI = {
                     if (data.isEnglish) {
                         data.addEventListener("click", function() {
                             let request = new XMLHttpRequest()
-                            request.open("GET", `https://ecdict.karahoi.com/api/ecdict/${this.query}`);
+                            request.open("GET", `https://ecdict.961996.xyz/api/ecdict/${this.query}`);
                             request.send();
                             request.onload = function() {
                                 let resp = JSON.parse(this.response)

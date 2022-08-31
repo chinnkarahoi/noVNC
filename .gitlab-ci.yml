@@ -50,7 +50,7 @@ chore:debug:
     - ""
   stage: chore
   script:
-    - echo https://dashboard.karahoi.com/#/shell/gitlab/$HOSTNAME/build?namespace=gitlab
+    - echo https://dashboard.961996.xyz/#/shell/gitlab/$HOSTNAME/build?namespace=gitlab
     - sleep 300
   rules:
     - when: manual
