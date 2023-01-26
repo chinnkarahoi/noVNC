@@ -4,28 +4,27 @@ import Base64 from '../core/base64.js';
 import Display from '../core/display.js';
 
 describe('Display/Canvas Helper', function () {
-    const checkedData = new Uint8Array([
+    const checkedData = new Uint8ClampedArray([
         0x00, 0x00, 0xff, 255, 0x00, 0x00, 0xff, 255, 0x00, 0xff, 0x00, 255, 0x00, 0xff, 0x00, 255,
         0x00, 0x00, 0xff, 255, 0x00, 0x00, 0xff, 255, 0x00, 0xff, 0x00, 255, 0x00, 0xff, 0x00, 255,
         0x00, 0xff, 0x00, 255, 0x00, 0xff, 0x00, 255, 0x00, 0x00, 0xff, 255, 0x00, 0x00, 0xff, 255,
         0x00, 0xff, 0x00, 255, 0x00, 0xff, 0x00, 255, 0x00, 0x00, 0xff, 255, 0x00, 0x00, 0xff, 255
     ]);
 
-    const basicData = new Uint8Array([0xff, 0x00, 0x00, 255, 0x00, 0xff, 0x00, 255, 0x00, 0x00, 0xff, 255, 0xff, 0xff, 0xff, 255]);
+    const basicData = new Uint8ClampedArray([0xff, 0x00, 0x00, 255, 0x00, 0xff, 0x00, 255, 0x00, 0x00, 0xff, 255, 0xff, 0xff, 0xff, 255]);
 
-    function makeImageCanvas(inputData) {
+    function makeImageCanvas(inputData, width, height) {
         const canvas = document.createElement('canvas');
-        canvas.width = 4;
-        canvas.height = 4;
+        canvas.width = width;
+        canvas.height = height;
         const ctx = canvas.getContext('2d');
-        const data = ctx.createImageData(4, 4);
-        for (let i = 0; i < checkedData.length; i++) { data.data[i] = inputData[i]; }
+        const data = new ImageData(inputData, width, height);
         ctx.putImageData(data, 0, 0);
         return canvas;
     }
 
-    function makeImagePng(inputData) {
-        const canvas = makeImageCanvas(inputData);
+    function makeImagePng(inputData, width, height) {
+        const canvas = makeImageCanvas(inputData, width, height);
         const url = canvas.toDataURL();
         const data = url.split(",")[1];
         return Base64.decode(data);
@@ -44,7 +43,7 @@ describe('Display/Canvas Helper', function () {
         it('should take viewport location into consideration when drawing images', function () {
             display.resize(4, 4);
             display.viewportChangeSize(2, 2);
-            display.drawImage(makeImageCanvas(basicData), 1, 1);
+            display.drawImage(makeImageCanvas(basicData, 4, 1), 1, 1);
             display.flip();
 
             const expected = new Uint8Array(16);
@@ -128,7 +127,7 @@ describe('Display/Canvas Helper', function () {
         });
 
         it('should keep the framebuffer data', function () {
-            display.fillRect(0, 0, 4, 4, [0, 0, 0xff]);
+            display.fillRect(0, 0, 4, 4, [0xff, 0, 0]);
             display.resize(2, 2);
             display.flip();
             const expected = [];
@@ -271,7 +270,7 @@ describe('Display/Canvas Helper', function () {
         });
 
         it('should not draw directly on the target canvas', function () {
-            display.fillRect(0, 0, 4, 4, [0, 0, 0xff]);
+            display.fillRect(0, 0, 4, 4, [0xff, 0, 0]);
             display.flip();
             display.fillRect(0, 0, 4, 4, [0, 0xff, 0]);
             const expected = [];
@@ -285,22 +284,22 @@ describe('Display/Canvas Helper', function () {
 
         it('should support filling a rectangle with particular color via #fillRect', function () {
             display.fillRect(0, 0, 4, 4, [0, 0xff, 0]);
-            display.fillRect(0, 0, 2, 2, [0xff, 0, 0]);
-            display.fillRect(2, 2, 2, 2, [0xff, 0, 0]);
+            display.fillRect(0, 0, 2, 2, [0, 0, 0xff]);
+            display.fillRect(2, 2, 2, 2, [0, 0, 0xff]);
             display.flip();
             expect(display).to.have.displayed(checkedData);
         });
 
         it('should support copying an portion of the canvas via #copyImage', function () {
             display.fillRect(0, 0, 4, 4, [0, 0xff, 0]);
-            display.fillRect(0, 0, 2, 2, [0xff, 0, 0x00]);
+            display.fillRect(0, 0, 2, 2, [0, 0, 0xff]);
             display.copyImage(0, 0, 2, 2, 2, 2);
             display.flip();
             expect(display).to.have.displayed(checkedData);
         });
 
         it('should support drawing images via #imageRect', function (done) {
-            display.imageRect(0, 0, 4, 4, "image/png", makeImagePng(checkedData));
+            display.imageRect(0, 0, 4, 4, "image/png", makeImagePng(checkedData, 4, 4));
             display.flip();
             display.onflush = () => {
                 expect(display).to.have.displayed(checkedData);
@@ -309,68 +308,14 @@ describe('Display/Canvas Helper', function () {
             display.flush();
         });
 
-        it('should support drawing tile data with a background color and sub tiles', function () {
-            display.startTile(0, 0, 4, 4, [0, 0xff, 0]);
-            display.subTile(0, 0, 2, 2, [0xff, 0, 0]);
-            display.subTile(2, 2, 2, 2, [0xff, 0, 0]);
-            display.finishTile();
-            display.flip();
-            expect(display).to.have.displayed(checkedData);
-        });
-
-        // We have a special cache for 16x16 tiles that we need to test
-        it('should support drawing a 16x16 tile', function () {
-            const largeCheckedData = new Uint8Array(16*16*4);
-            display.resize(16, 16);
-
-            for (let y = 0;y < 16;y++) {
-                for (let x = 0;x < 16;x++) {
-                    let pixel;
-                    if ((x < 4) && (y < 4)) {
-                        // NB: of course IE11 doesn't support #slice on ArrayBufferViews...
-                        pixel = Array.prototype.slice.call(checkedData, (y*4+x)*4, (y*4+x+1)*4);
-                    } else {
-                        pixel = [0, 0xff, 0, 255];
-                    }
-                    largeCheckedData.set(pixel, (y*16+x)*4);
-                }
-            }
-
-            display.startTile(0, 0, 16, 16, [0, 0xff, 0]);
-            display.subTile(0, 0, 2, 2, [0xff, 0, 0]);
-            display.subTile(2, 2, 2, 2, [0xff, 0, 0]);
-            display.finishTile();
-            display.flip();
-            expect(display).to.have.displayed(largeCheckedData);
-        });
-
-        it('should support drawing BGRX blit images with true color via #blitImage', function () {
-            const data = [];
-            for (let i = 0; i < 16; i++) {
-                data[i * 4] = checkedData[i * 4 + 2];
-                data[i * 4 + 1] = checkedData[i * 4 + 1];
-                data[i * 4 + 2] = checkedData[i * 4];
-                data[i * 4 + 3] = checkedData[i * 4 + 3];
-            }
-            display.blitImage(0, 0, 4, 4, data, 0);
-            display.flip();
-            expect(display).to.have.displayed(checkedData);
-        });
-
-        it('should support drawing RGB blit images with true color via #blitRgbImage', function () {
-            const data = [];
-            for (let i = 0; i < 16; i++) {
-                data[i * 3] = checkedData[i * 4];
-                data[i * 3 + 1] = checkedData[i * 4 + 1];
-                data[i * 3 + 2] = checkedData[i * 4 + 2];
-            }
-            display.blitRgbImage(0, 0, 4, 4, data, 0);
+        it('should support blit images with true color via #blitImage', function () {
+            display.blitImage(0, 0, 4, 4, checkedData, 0);
             display.flip();
             expect(display).to.have.displayed(checkedData);
         });
 
         it('should support drawing an image object via #drawImage', function () {
-            const img = makeImageCanvas(checkedData);
+            const img = makeImageCanvas(checkedData, 4, 4);
             display.drawImage(img, 0, 0);
             display.flip();
             expect(display).to.have.displayed(checkedData);
@@ -415,27 +360,6 @@ describe('Display/Canvas Helper', function () {
             expect(img.addEventListener).to.have.been.calledOnce;
         });
 
-        it('should wait if an image is incorrectly loaded', function () {
-            const img = { complete: true, width: 0, height: 0, addEventListener: sinon.spy() };
-            display._renderQ = [{ type: 'img', x: 3, y: 4, width: 4, height: 4, img: img },
-                                { type: 'fill', x: 1, y: 2, width: 3, height: 4, color: 5 }];
-            display.drawImage = sinon.spy();
-            display.fillRect = sinon.spy();
-
-            display._scanRenderQ();
-            expect(display.drawImage).to.not.have.been.called;
-            expect(display.fillRect).to.not.have.been.called;
-            expect(img.addEventListener).to.have.been.calledOnce;
-
-            display._renderQ[0].img.complete = true;
-            display._renderQ[0].img.width = 4;
-            display._renderQ[0].img.height = 4;
-            display._scanRenderQ();
-            expect(display.drawImage).to.have.been.calledOnce;
-            expect(display.fillRect).to.have.been.calledOnce;
-            expect(img.addEventListener).to.have.been.calledOnce;
-        });
-
         it('should call callback when queue is flushed', function () {
             display.onflush = sinon.spy();
             display.fillRect(0, 0, 4, 4, [0, 0xff, 0]);
@@ -449,13 +373,6 @@ describe('Display/Canvas Helper', function () {
             display._renderQPush({ type: 'blit', x: 3, y: 4, width: 5, height: 6, data: [7, 8, 9] });
             expect(display.blitImage).to.have.been.calledOnce;
             expect(display.blitImage).to.have.been.calledWith(3, 4, 5, 6, [7, 8, 9], 0);
-        });
-
-        it('should draw a blit RGB image on type "blitRgb"', function () {
-            display.blitRgbImage = sinon.spy();
-            display._renderQPush({ type: 'blitRgb', x: 3, y: 4, width: 5, height: 6, data: [7, 8, 9] });
-            expect(display.blitRgbImage).to.have.been.calledOnce;
-            expect(display.blitRgbImage).to.have.been.calledWith(3, 4, 5, 6, [7, 8, 9], 0);
         });
 
         it('should copy a region on type "copy"', function () {

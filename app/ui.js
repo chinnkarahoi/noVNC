@@ -8,15 +8,16 @@
 
 import * as Log from '../core/util/logging.js';
 import _, { l10n } from './localization.js';
-import { isTouchDevice, isSafari, hasScrollbarGutter, dragThreshold }
+import { isTouchDevice, isMac, isIOS, isAndroid, isChromeOS, isSafari,
+         hasScrollbarGutter, dragThreshold }
     from '../core/util/browser.js';
 import { setCapture, getPointerEvent } from '../core/util/events.js';
 import KeyTable from "../core/input/keysym.js";
 import keysyms from "../core/input/keysymdef.js";
 import Keyboard from "../core/input/keyboard.js";
 import RFB from "../core/rfb.js";
+import WebAudio from "../core/webaudio.js";
 import * as WebUtil from "./webutil.js";
-import fallbackCopyTextToClipboard from "./clipboard.js"
 
 const PAGE_TITLE = "noVNC";
 
@@ -41,6 +42,7 @@ const UI = {
     inhibitReconnect: true,
     reconnectCallback: null,
     reconnectPassword: null,
+    webaudio: null,
 
     prime() {
         return WebUtil.initSettings().then(() => {
@@ -62,7 +64,21 @@ const UI = {
         // Translate the DOM
         l10n.translateDOM();
 
-        WebUtil.fetchJSON('./package.json')
+        // We rely on modern APIs which might not be available in an
+        // insecure context
+        if (!window.isSecureContext) {
+            // FIXME: This gets hidden when connecting
+            UI.showStatus(_("HTTPS is required for full functionality"), 'error');
+        }
+
+        // Try to fetch version number
+        fetch('./package.json')
+            .then((response) => {
+                if (!response.ok) {
+                    throw Error("" + response.status + " " + response.statusText);
+                }
+                return response.json();
+            })
             .then((packageInfo) => {
                 Array.from(document.getElementsByClassName('noVNC_version')).forEach(el => el.innerText = packageInfo.version);
             })
@@ -75,7 +91,6 @@ const UI = {
 
         // Adapt the interface for touch screen devices
         if (isTouchDevice) {
-            document.documentElement.classList.add("noVNC_touch");
             // Remove the address bar
             setTimeout(() => window.scrollTo(0, 1), 100);
         }
@@ -116,24 +131,6 @@ const UI = {
             // Show the connect panel on first load unless autoconnecting
             UI.openConnectPanel();
         }
-
-        // UI.openExtraKeys()
-
-        let protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-        let clipboard_url = protocol + '://' + window.location.hostname + ":" + window.location.port + '/clipboard';
-        let clip_ws = new WebSocket(clipboard_url)
-        clip_ws.onmessage = function(e) {
-            // fallbackCopyTextToClipboard(e.data)
-            if (e.data.length > 1) {
-                UI.translatorReceive(e.data)
-            }
-            console.log(e.data)
-        }
-        var intervalId = window.setInterval(function(){
-            /// call your function here
-        }, 5000);
-        // UI.openTranslator()
-
 
         return Promise.resolve(UI.rfb);
     },
@@ -184,6 +181,7 @@ const UI = {
         UI.initSetting('compression', 2);
         UI.initSetting('shared', true);
         UI.initSetting('view_only', false);
+        UI.initSetting('audio', true);
         UI.initSetting('show_dot', false);
         UI.initSetting('path', 'websockify');
         UI.initSetting('repeaterID', '');
@@ -208,6 +206,20 @@ const UI = {
                         children[j].label = labels[i];
                         break;
                     }
+                }
+            }
+        }
+    },
+
+    toggleAudio() {
+        console.log('here');
+        const audio = UI.getSetting('audio');
+        if (audio) {
+            UI.webaudio.start();
+        } else {
+            if(UI.webaudio !== null) {
+                if (UI.webaudio.connected) {
+                    UI.webaudio.stop();
                 }
             }
         }
@@ -253,14 +265,6 @@ const UI = {
     },
 
     addTouchSpecificHandlers() {
-        document.getElementById("noVNC_mouse_button0")
-            .addEventListener('click', () => UI.setMouseButton(1));
-        document.getElementById("noVNC_mouse_button1")
-            .addEventListener('click', () => UI.setMouseButton(4));
-        document.getElementById("noVNC_mouse_button2")
-            .addEventListener('click', () => UI.setMouseButton(4));
-        document.getElementById("noVNC_mouse_button4")
-            .addEventListener('click', () => UI.setMouseButton(1));
         document.getElementById("noVNC_keyboard_button")
             .addEventListener('click', UI.toggleVirtualKeyboard);
 
@@ -302,8 +306,6 @@ const UI = {
     },
 
     addExtraKeysHandlers() {
-        document.getElementById("noVNC_toggle_translator")
-            .addEventListener('click', UI.toggleTranslator);
         document.getElementById("noVNC_toggle_extra_keys_button")
             .addEventListener('click', UI.toggleExtraKeys);
         document.getElementById("noVNC_toggle_ctrl_button")
@@ -317,7 +319,7 @@ const UI = {
         document.getElementById("noVNC_send_esc_button")
             .addEventListener('click', UI.sendEsc);
         document.getElementById("noVNC_send_ctrl_alt_del_button")
-            .addEventListener('click', UI.sendReturn);
+            .addEventListener('click', UI.sendCtrlAltDel);
     },
 
     addMachineHandlers() {
@@ -339,6 +341,10 @@ const UI = {
         document.getElementById("noVNC_cancel_reconnect_button")
             .addEventListener('click', UI.cancelReconnect);
 
+        document.getElementById("noVNC_approve_server_button")
+            .addEventListener('click', UI.approveServer);
+        document.getElementById("noVNC_reject_server_button")
+            .addEventListener('click', UI.rejectServer);
         document.getElementById("noVNC_credentials_button")
             .addEventListener('click', UI.setCredentials);
     },
@@ -348,8 +354,6 @@ const UI = {
             .addEventListener('click', UI.toggleClipboardPanel);
         document.getElementById("noVNC_clipboard_text")
             .addEventListener('change', UI.clipboardSend);
-        document.getElementById("noVNC_clipboard_clear_button")
-            .addEventListener('click', UI.clipboardClear);
     },
 
     // Add a call to save settings when the element changes,
@@ -379,6 +383,8 @@ const UI = {
         UI.addSettingChangeHandler('shared');
         UI.addSettingChangeHandler('view_only');
         UI.addSettingChangeHandler('view_only', UI.updateViewOnly);
+        UI.addSettingChangeHandler('audio');
+        UI.addSettingChangeHandler('audio', UI.updateEnableAudio);
         UI.addSettingChangeHandler('show_dot');
         UI.addSettingChangeHandler('show_dot', UI.updateShowDotCursor);
         UI.addSettingChangeHandler('host');
@@ -451,7 +457,6 @@ const UI = {
             UI.disableSetting('port');
             UI.disableSetting('path');
             UI.disableSetting('repeaterID');
-            UI.setMouseButton(1);
 
             // Hide the controlbar after 2 seconds
             UI.closeControlbarTimeout = setTimeout(UI.closeControlbar, 2000);
@@ -469,6 +474,8 @@ const UI = {
         // State change closes dialogs as they may not be relevant
         // anymore
         UI.closeAllPanels();
+        document.getElementById('noVNC_verify_server_dlg')
+            .classList.remove('noVNC_open');
         document.getElementById('noVNC_credentials_dlg')
             .classList.remove('noVNC_open');
     },
@@ -601,10 +608,20 @@ const UI = {
 
         // Consider this a movement of the handle
         UI.controlbarDrag = true;
+
+        // The user has "followed" hint, let's hide it until the next drag
+        UI.showControlbarHint(false, false);
     },
 
-    showControlbarHint(show) {
+    showControlbarHint(show, animate=true) {
         const hint = document.getElementById('noVNC_control_bar_hint');
+
+        if (animate) {
+            hint.classList.remove("noVNC_notransition");
+        } else {
+            hint.classList.add("noVNC_notransition");
+        }
+
         if (show) {
             hint.classList.add("noVNC_active");
         } else {
@@ -785,11 +802,6 @@ const UI = {
                 }
             }
         } else {
-            /*Weird IE9 error leads to 'null' appearring
-            in textboxes instead of ''.*/
-            if (value === null) {
-                value = "";
-            }
             ctrl.value = value;
         }
     },
@@ -849,7 +861,7 @@ const UI = {
         UI.closeSettingsPanel();
         UI.closePowerPanel();
         UI.closeClipboardPanel();
-        // UI.closeExtraKeys();
+        UI.closeExtraKeys();
     },
 
 /* ------^-------
@@ -870,6 +882,7 @@ const UI = {
         UI.updateSetting('compression');
         UI.updateSetting('shared');
         UI.updateSetting('view_only');
+        UI.updateSetting('audio');
         UI.updateSetting('path');
         UI.updateSetting('repeaterID');
         UI.updateSetting('logging');
@@ -977,164 +990,10 @@ const UI = {
         }
     },
 
-    translatorReceive(text) {
-        let raw_ele = document.getElementById('noVNC_translator_raw_text')
-        let word_ele = document.getElementById('noVNC_translator_word_text')
-
-        let request = new XMLHttpRequest()
-        request.open("POST", "/api/parse/doc/");
-        request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded')
-        request.send("text=" + text);
-        request.onload = function() {
-            let resp = JSON.parse(this.response)
-            while (raw_ele.firstChild) {
-                raw_ele.removeChild(raw_ele.lastChild);
-            }
-            while (word_ele.firstChild) {
-                word_ele.removeChild(word_ele.lastChild);
-            }
-            resp.sents.forEach(function(line) {
-                let tokens = line.tokens
-                let e = document.createElement("div");
-                tokens.forEach((token) => {
-                    let data = document.createElement("span");
-                    if (['記号', '助詞'].indexOf(token.pos.substring(0, 2)) >= 0) {
-                        token.ignore = true;
-                    }
-                    else if (['助動詞'].indexOf(token.pos) >= 0) {
-                        token.ignore = true;
-                    }
-                    data.classList.add('content-word')
-                    if (!token.ignore) {
-                        data.classList.add('highlight')
-                    }
-                    let english = /^[A-Za-z]*$/
-                    if ('furi' in token) {
-                        data.innerHTML = token.furi
-                    } else {
-                        let text = token.text
-                        if (english.test(text)) {
-                            text += " "
-                        }
-                        data.innerHTML = text
-                    }
-                    if ('lemma' in token) {
-                        data.query = token.lemma
-                    } else {
-                        data.query = token.text
-                    }
-                    if (english.test(token.text)) {
-                        data.query = token.text
-                        data.isEnglish = true
-                    } else {
-                        data.query = line.text.substr(token.cfrom, 20)
-                    }
-
-                    if (data.isEnglish) {
-                        data.addEventListener("click", function() {
-                            let request = new XMLHttpRequest()
-                            request.open("GET", `https://ecdict.961996.xyz/api/ecdict/${this.query}`);
-                            request.send();
-                            request.onload = function() {
-                                let resp = JSON.parse(this.response)
-                                word_ele.innerHTML = ''
-                                let entry_span = document.createElement("div");
-
-                                if (!resp) {
-                                    entry_span.innerHTML += `<span">not found</span><br>`
-                                    word_ele.appendChild(entry_span)
-                                    return
-                                }
-
-                                entry_span.innerHTML += `<span style="color:#007bff;">${resp.word}</span>`
-                                entry_span.innerHTML += "<span> </span>"
-                                entry_span.innerHTML += `<span style="color:red;">${resp.phonetic}</span>`
-                                entry_span.innerHTML += "<span> </span>"
-                                entry_span.innerHTML += `<span style="color:orange;">${resp.frq}</span>`
-                                entry_span.innerHTML += "<span> </span>"
-                                entry_span.innerHTML += `<span style="color:orange;">${resp.bnc}</span>`
-
-                                entry_span.innerHTML += `<br>`
-                                word_ele.appendChild(entry_span)
-
-                                let translation_span = document.createElement("ol");
-                                resp.translation.split('\n').forEach(function(text) {
-                                    translation_span.innerHTML += `<li><span>${text}</span></li>`
-                                })
-                                word_ele.appendChild(translation_span)
-
-                                let definition_span = document.createElement("ol");
-                                resp.definition.split('\n').forEach(function(text) {
-                                    definition_span.innerHTML += `<li><span>${text}</span></li>`
-                                })
-                                word_ele.appendChild(definition_span)
-
-                                console.log(resp)
-                            }
-                        })
-                    } else {
-                        data.addEventListener("click", function() {
-                            let request = new XMLHttpRequest()
-                            request.open("POST", "/api/jamdict/search/");
-                            request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded')
-                            request.send("query=" + this.query);
-                            request.onload = function() {
-                                let resp = JSON.parse(this.response)
-                                word_ele.innerHTML = ''
-                                resp.entries.forEach(function(entry){
-                                    let entry_span = document.createElement("div");
-                                    entry.kanji.forEach(function(kanji, index) {
-                                        console.log(kanji)
-                                        if (index != 0) {
-                                            entry_span.innerHTML += ", "
-                                        }
-                                        entry_span.innerHTML += `<span style="color:#007bff;">${kanji.text}</span>`
-                                    })
-
-                                    entry_span.innerHTML += "<span> </span>"
-
-                                    entry.kana.forEach(function(kana, index) {
-                                        if (index != 0) {
-                                            entry_span.innerHTML += ", "
-                                        }
-                                        entry_span.innerHTML += `<span style="color:red;">${kana.text}</span>`
-                                    })
-
-                                    word_ele.appendChild(entry_span)
-
-                                    let sense_span = document.createElement("ol");
-                                    entry.senses.forEach(function(sense, index) {
-                                        let glosses = ""
-                                        sense.SenseGloss.forEach(function(gloss){
-                                            if (glosses != "") {
-                                                glosses += ", "
-                                            }
-                                            glosses += `<span>${gloss.text}</span>`
-                                        })
-                                        sense_span.innerHTML += `<li>${glosses}</li>`
-                                    })
-                                    word_ele.appendChild(sense_span)
-                                })
-                            }
-                        })
-                    }
-
-                    e.appendChild(data)
-                })
-                raw_ele.appendChild(e)
-            })
-        }
-    },
-
     clipboardReceive(e) {
         Log.Debug(">> UI.clipboardReceive: " + e.detail.text.substr(0, 40) + "...");
         document.getElementById('noVNC_clipboard_text').value = e.detail.text;
         Log.Debug("<< UI.clipboardReceive");
-    },
-
-    clipboardClear() {
-        document.getElementById('noVNC_clipboard_text').value = "";
-        UI.rfb.clipboardPasteFrom("");
     },
 
     clipboardSend() {
@@ -1205,11 +1064,14 @@ const UI = {
         UI.rfb = new RFB(document.getElementById('noVNC_container'), url,
                          { shared: UI.getSetting('shared'),
                            repeaterID: UI.getSetting('repeaterID'),
-                           credentials: { password: password } });
+                           credentials: { password: password },
+                           wsProtocols: ["binary"] });
         UI.rfb.addEventListener("connect", UI.connectFinished);
         UI.rfb.addEventListener("disconnect", UI.disconnectFinished);
+        UI.rfb.addEventListener("serververification", UI.serverVerify);
         UI.rfb.addEventListener("credentialsrequired", UI.credentials);
         UI.rfb.addEventListener("securityfailure", UI.securityFailed);
+        UI.rfb.addEventListener("clippingviewport", UI.updateViewDrag);
         UI.rfb.addEventListener("capabilities", UI.updatePowerButton);
         UI.rfb.addEventListener("clipboard", UI.clipboardReceive);
         UI.rfb.addEventListener("bell", UI.bell);
@@ -1219,6 +1081,7 @@ const UI = {
         UI.rfb.resizeSession = UI.getSetting('resize') === 'remote';
         UI.rfb.qualityLevel = parseInt(UI.getSetting('quality'));
         UI.rfb.compressionLevel = parseInt(UI.getSetting('compression'));
+        UI.rfb.enableAudio = UI.getSetting('audio');
         UI.rfb.showDotCursor = UI.getSetting('show_dot');
 
         UI.updateViewOnly(); // requires UI.rfb
@@ -1233,6 +1096,10 @@ const UI = {
         UI.inhibitReconnect = true;
 
         UI.updateVisualState('disconnecting');
+
+        if(UI.webaudio !== null && UI.webaudio.socket !== null) {
+            UI.webaudio.socket.close();
+        }
 
         // Don't display the connection settings until we're actually disconnected
     },
@@ -1275,6 +1142,19 @@ const UI = {
 
         // Do this last because it can only be used on rendered elements
         UI.rfb.focus();
+
+        let audio_url;
+        // let host = window.location.hostname; 
+        // let port = '32038';
+        if (window.location.protocol === "https:") {
+            audio_url = 'wss';
+        } else {
+            audio_url = 'ws';
+        }
+        audio_url += '://' + window.location.host + '/audiowebsock';
+
+        UI.webaudio = new WebAudio(audio_url);
+        UI.toggleAudio();
     },
 
     disconnectFinished(e) {
@@ -1296,7 +1176,9 @@ const UI = {
             } else {
                 UI.showStatus(_("Failed to connect to server"), 'error');
             }
-        } else if (UI.getSetting('reconnect', false) === true && !UI.inhibitReconnect) {
+        }
+        // If reconnecting is allowed process it now
+        if (UI.getSetting('reconnect', false) === true && !UI.inhibitReconnect) {
             UI.updateVisualState('reconnecting');
 
             const delay = parseInt(UI.getSetting('reconnect_delay'));
@@ -1307,7 +1189,7 @@ const UI = {
             UI.showStatus(_("Disconnected"), 'normal');
         }
 
-        document.title = PAGE_TITLE;
+    document.title = "Steam Headless - noVNC";
 
         UI.openControlbar();
         UI.openConnectPanel();
@@ -1329,6 +1211,37 @@ const UI = {
 
 /* ------^-------
  *  /CONNECTION
+ * ==============
+ * SERVER VERIFY
+ * ------v------*/
+
+    async serverVerify(e) {
+        const type = e.detail.type;
+        if (type === 'RSA') {
+            const publickey = e.detail.publickey;
+            let fingerprint = await window.crypto.subtle.digest("SHA-1", publickey);
+            // The same fingerprint format as RealVNC
+            fingerprint = Array.from(new Uint8Array(fingerprint).slice(0, 8)).map(
+                x => x.toString(16).padStart(2, '0')).join('-');
+            document.getElementById('noVNC_verify_server_dlg').classList.add('noVNC_open');
+            document.getElementById('noVNC_fingerprint').innerHTML = fingerprint;
+        }
+    },
+
+    approveServer(e) {
+        e.preventDefault();
+        document.getElementById('noVNC_verify_server_dlg').classList.remove('noVNC_open');
+        UI.rfb.approveServer();
+    },
+
+    rejectServer(e) {
+        e.preventDefault();
+        document.getElementById('noVNC_verify_server_dlg').classList.remove('noVNC_open');
+        UI.disconnect();
+    },
+
+/* ------^-------
+ * /SERVER VERIFY
  * ==============
  *   PASSWORD
  * ------v------*/
@@ -1453,13 +1366,25 @@ const UI = {
 
         const scaling = UI.getSetting('resize') === 'scale';
 
+        // Some platforms have overlay scrollbars that are difficult
+        // to use in our case, which means we have to force panning
+        // FIXME: Working scrollbars can still be annoying to use with
+        //        touch, so we should ideally be able to have both
+        //        panning and scrollbars at the same time
+
+        let brokenScrollbars = false;
+
+        if (!hasScrollbarGutter) {
+            if (isIOS() || isAndroid() || isMac() || isChromeOS()) {
+                brokenScrollbars = true;
+            }
+        }
+
         if (scaling) {
             // Can't be clipping if viewport is scaled to fit
             UI.forceSetting('view_clip', false);
             UI.rfb.clipViewport  = false;
-        } else if (!hasScrollbarGutter) {
-            // Some platforms have scrollbars that are difficult
-            // to use in our case, so we always use our own panning
+        } else if (brokenScrollbars) {
             UI.forceSetting('view_clip', true);
             UI.rfb.clipViewport = true;
         } else {
@@ -1490,7 +1415,8 @@ const UI = {
 
         const viewDragButton = document.getElementById('noVNC_view_drag_button');
 
-        if (!UI.rfb.clipViewport && UI.rfb.dragViewport) {
+        if ((!UI.rfb.clipViewport || !UI.rfb.clippingViewport) &&
+            UI.rfb.dragViewport) {
             // We are no longer clipping the viewport. Make sure
             // viewport drag isn't active when it can't be used.
             UI.rfb.dragViewport = false;
@@ -1507,6 +1433,8 @@ const UI = {
         } else {
             viewDragButton.classList.add("noVNC_hidden");
         }
+
+        viewDragButton.disabled = !UI.rfb.clippingViewport;
     },
 
 /* ------^-------
@@ -1703,32 +1631,6 @@ const UI = {
  *   EXTRA KEYS
  * ------v------*/
 
-    openTranslator() {
-        UI.closeAllPanels();
-        UI.openControlbar();
-
-        document.getElementById('noVNC_translator')
-            .classList.add("noVNC_open");
-        document.getElementById('noVNC_toggle_translator')
-            .classList.add("noVNC_selected");
-    },
-
-    closeTranslator() {
-        document.getElementById('noVNC_translator')
-            .classList.remove("noVNC_open");
-        document.getElementById('noVNC_toggle_translator')
-            .classList.remove("noVNC_selected");
-    },
-
-    toggleTranslator() {
-        if (document.getElementById('noVNC_translator')
-            .classList.contains("noVNC_open")) {
-            UI.closeTranslator();
-        } else  {
-            UI.openTranslator();
-        }
-    },
-
     openExtraKeys() {
         UI.closeAllPanels();
         UI.openControlbar();
@@ -1761,10 +1663,6 @@ const UI = {
 
     sendTab() {
         UI.sendKey(KeyTable.XK_Tab, "Tab");
-    },
-
-    sendReturn() {
-        UI.sendKey(KeyTable.XK_Return, "Return");
     },
 
     toggleCtrl() {
@@ -1833,24 +1731,6 @@ const UI = {
  *     MISC
  * ------v------*/
 
-    setMouseButton(num) {
-        const viewOnly = UI.rfb.viewOnly;
-        if (UI.rfb && !viewOnly) {
-            UI.rfb.touchButton = num;
-        }
-
-        const blist = [0, 1, 2, 4];
-        for (let b = 0; b < blist.length; b++) {
-            const button = document.getElementById('noVNC_mouse_button' +
-                                                 blist[b]);
-            if (blist[b] === num && !viewOnly) {
-                button.classList.remove("noVNC_hidden");
-            } else {
-                button.classList.add("noVNC_hidden");
-            }
-        }
-    },
-
     updateViewOnly() {
         if (!UI.rfb) return;
         UI.rfb.viewOnly = UI.getSetting('view_only');
@@ -1861,8 +1741,6 @@ const UI = {
                 .classList.add('noVNC_hidden');
             document.getElementById('noVNC_toggle_extra_keys_button')
                 .classList.add('noVNC_hidden');
-            document.getElementById('noVNC_mouse_button' + UI.rfb.touchButton)
-                .classList.add('noVNC_hidden');
             document.getElementById('noVNC_clipboard_button')
                 .classList.add('noVNC_hidden');
         } else {
@@ -1870,11 +1748,15 @@ const UI = {
                 .classList.remove('noVNC_hidden');
             document.getElementById('noVNC_toggle_extra_keys_button')
                 .classList.remove('noVNC_hidden');
-            document.getElementById('noVNC_mouse_button' + UI.rfb.touchButton)
-                .classList.remove('noVNC_hidden');
             document.getElementById('noVNC_clipboard_button')
                 .classList.remove('noVNC_hidden');
         }
+    },
+
+    updateEnableAudio() {
+        if (!UI.rfb) return;
+        UI.rfb.enableAudio = UI.getSetting('audio');
+        UI.toggleAudio();
     },
 
     updateShowDotCursor() {
@@ -1889,7 +1771,7 @@ const UI = {
     updateDesktopName(e) {
         UI.desktopName = e.detail.name;
         // Display the desktop name in the document title
-        document.title = e.detail.name + " - " + PAGE_TITLE;
+    document.title = "Steam Headless - noVNC";
     },
 
     bell(e) {
@@ -1925,12 +1807,18 @@ const UI = {
 };
 
 // Set up translations
-const LINGUAS = ["cs", "de", "el", "es", "ja", "ko", "nl", "pl", "ru", "sv", "tr", "zh_CN", "zh_TW"];
+const LINGUAS = ["cs", "de", "el", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt_BR", "ru", "sv", "tr", "zh_CN", "zh_TW"];
 l10n.setup(LINGUAS);
 if (l10n.language === "en" || l10n.dictionary !== undefined) {
     UI.prime();
 } else {
-    WebUtil.fetchJSON('app/locale/' + l10n.language + '.json')
+    fetch('app/locale/' + l10n.language + '.json')
+        .then((response) => {
+            if (!response.ok) {
+                throw Error("" + response.status + " " + response.statusText);
+            }
+            return response.json();
+        })
         .then((translations) => { l10n.dictionary = translations; })
         .catch(err => Log.Error("Failed to load translations: " + err))
         .then(UI.prime);

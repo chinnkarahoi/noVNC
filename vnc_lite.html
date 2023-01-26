@@ -16,12 +16,6 @@
     -->
     <title>noVNC</title>
 
-    <meta charset="utf-8">
-
-    <!-- Always force latest IE rendering engine (even in intranet) &
-                Chrome Frame. Remove this if you use the .htaccess -->
-    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-
     <style>
 
         body {
@@ -45,6 +39,15 @@
         #status {
             text-align: center;
         }
+        #toggleAudioButton {
+            position: fixed;
+            top: 0px;
+            left: 0px;
+            border: 1px outset;
+            padding: 5px 5px 4px 5px;
+            cursor: pointer;
+            display: none;
+        }
         #sendCtrlAltDelButton {
             position: fixed;
             top: 0px;
@@ -61,28 +64,41 @@
 
     </style>
 
-    <!-- Promise polyfill for IE11 -->
-    <script src="vendor/promise.js"></script>
-
-    <!-- ES2015/ES6 modules polyfill -->
-    <script nomodule src="vendor/browser-es-module-loader/dist/browser-es-module-loader.js"></script>
-
-    <!-- actual script modules -->
     <script type="module" crossorigin="anonymous">
         // RFB holds the API to connect and communicate with a VNC server
         import RFB from './core/rfb.js';
+        import WebAudio from './core/webaudio.js';
 
         let rfb;
         let desktopName;
+        let wa;
 
         // When this function is called we have
         // successfully connected to a server
         function connectedToServer(e) {
+            let audio_url;
+            // let host = window.location.hostname; 
+            // let port = '32038';
+            if (window.location.protocol === "https:") {
+                audio_url = 'wss';
+            } else {
+                audio_url = 'ws';
+            }
+            audio_url += '://' + window.location.host + '/audiowebsock';
+
+            wa = new WebAudio(audio_url);
+            document.getElementById('toggleAudioButton').style.display = "block";
+
             status("Connected to " + desktopName);
         }
 
         // This function is called when we are disconnected
         function disconnectedFromServer(e) {
+            if(wa !== null) {
+                wa.stop();
+                wa = null;
+                document.getElementById('toggleAudioButton').style.display = "none";
+            }
             if (e.detail.clean) {
                 status("Disconnected");
             } else {
@@ -111,6 +127,19 @@
             return false;
         }
 
+        // Enable the audio websocket
+        function toggleAudio() {
+            if (wa.connected) {
+                console.log('Stopping audio...')
+                wa.stop();
+                document.getElementById('toggleAudioButton').innerText = "Enable Audio";
+            } else {
+                console.log('Starting audio websocket on: ' + audio_url)
+                wa.start();
+                document.getElementById('toggleAudioButton').innerText = "Disable Audio";
+            }
+        }
+
         // Show a status text in the top bar
         function status(text) {
             document.getElementById('status').textContent = text;
@@ -120,13 +149,20 @@
         // query string. If the variable isn't defined in the URL
         // it returns the default value instead.
         function readQueryVariable(name, defaultValue) {
-            // A URL with a query parameter can look like this:
+            // A URL with a query parameter can look like this (But will most probably get logged on the http server):
             // https://www.example.com?myqueryparam=myvalue
+            //
+            // For privacy (Using a hastag #, the parameters will not be sent to the server)
+            // the url can be requested in the following way:
+            // https://www.example.com#myqueryparam=myvalue&password=secreatvalue
+            //
+            // Even Mixing public and non public parameters will work:
+            // https://www.example.com?nonsecretparam=example.com#password=secreatvalue
             //
             // Note that we use location.href instead of location.search
             // because Firefox < 53 has a bug w.r.t location.search
             const re = new RegExp('.*[?&]' + name + '=([^&#]*)'),
-                  match = document.location.href.match(re);
+                  match = ''.concat(document.location.href, window.location.hash).match(re);
 
             if (match) {
                 // We have to decode the URL since want the cleartext value
@@ -139,12 +175,16 @@
         document.getElementById('sendCtrlAltDelButton')
             .onclick = sendCtrlAltDel;
 
+        document.getElementById('toggleAudioButton')
+            .onclick = toggleAudio;
+
         // Read parameters specified in the URL query string
         // By default, use the host and port of server that served this file
         const host = readQueryVariable('host', window.location.hostname);
         let port = readQueryVariable('port', window.location.port);
         const password = readQueryVariable('password');
         const path = readQueryVariable('path', 'websockify');
+        const audio_path = readQueryVariable('audio_path', '');
 
         // | | |         | | |
         // | | | Connect | | |
@@ -154,6 +194,7 @@
 
         // Build the websocket URL used to connect
         let url;
+        let audio_url;
         if (window.location.protocol === "https:") {
             url = 'wss';
         } else {
@@ -162,6 +203,9 @@
         url += '://' + host;
         if(port) {
             url += ':' + port;
+        }
+        if(audio_path !== '') {
+            audio_url = url + '/' + audio_path;
         }
         url += '/' + path;
 
@@ -183,6 +227,7 @@
 
 <body>
     <div id="top_bar">
+        <div id="toggleAudioButton">Enable Audio</div>
         <div id="status">Loading</div>
         <div id="sendCtrlAltDelButton">Send CtrlAltDel</div>
     </div>

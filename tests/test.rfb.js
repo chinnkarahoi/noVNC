@@ -7,24 +7,9 @@ import { deflateInit, deflate } from "../vendor/pako/lib/zlib/deflate.js";
 import { encodings } from '../core/encodings.js';
 import { toUnsigned32bit } from '../core/util/int.js';
 import { encodeUTF8 } from '../core/util/strings.js';
+import KeyTable from '../core/input/keysym.js';
 
 import FakeWebSocket from './fake.websocket.js';
-
-/* UIEvent constructor polyfill for IE */
-(() => {
-    if (typeof window.UIEvent === "function") return;
-
-    function UIEvent( event, params ) {
-        params = params || { bubbles: false, cancelable: false, view: window, detail: undefined };
-        const evt = document.createEvent( 'UIEvent' );
-        evt.initUIEvent( event, params.bubbles, params.cancelable, params.view, params.detail );
-        return evt;
-    }
-
-    UIEvent.prototype = window.UIEvent.prototype;
-
-    window.UIEvent = UIEvent;
-})();
 
 function push8(arr, num) {
     "use strict";
@@ -86,15 +71,33 @@ function deflateWithSize(data) {
 describe('Remote Frame Buffer Protocol Client', function () {
     let clock;
     let raf;
+    let fakeResizeObserver = null;
+    const realObserver = window.ResizeObserver;
+
+    // Since we are using fake timers we don't actually want
+    // to wait for the browser to observe the size change,
+    // that's why we use a fake ResizeObserver
+    class FakeResizeObserver {
+        constructor(handler) {
+            this.fire = handler;
+            fakeResizeObserver = this;
+        }
+        disconnect() {}
+        observe(target, options) {}
+        unobserve(target) {}
+    }
 
     before(FakeWebSocket.replace);
     after(FakeWebSocket.restore);
 
     before(function () {
-        this.clock = clock = sinon.useFakeTimers();
+        this.clock = clock = sinon.useFakeTimers(Date.now());
         // sinon doesn't support this yet
         raf = window.requestAnimationFrame;
         window.requestAnimationFrame = setTimeout;
+        // We must do this in a 'before' since it needs to be set before
+        // the RFB constructor, which runs in beforeEach further down
+        window.ResizeObserver = FakeResizeObserver;
         // Use a single set of buffers instead of reallocating to
         // speed up tests
         const sock = new Websock();
@@ -107,12 +110,16 @@ describe('Remote Frame Buffer Protocol Client', function () {
             this._rQ = rQ;
         };
 
+        // Avoiding printing the entire Websock buffer on errors
+        Websock.prototype.inspect = function () { return "[object Websock]"; };
     });
 
     after(function () {
         Websock.prototype._allocateBuffers = Websock.prototype._oldAllocateBuffers;
+        delete Websock.prototype.inspect;
         this.clock.restore();
         window.requestAnimationFrame = raf;
+        window.ResizeObserver = realObserver;
     });
 
     let container;
@@ -153,38 +160,112 @@ describe('Remote Frame Buffer Protocol Client', function () {
     }
 
     describe('Connecting/Disconnecting', function () {
-        describe('#RFB', function () {
-            it('should set the current state to "connecting"', function () {
-                const client = new RFB(document.createElement('div'), 'wss://host:8675');
-                client._rfbConnectionState = '';
-                this.clock.tick();
-                expect(client._rfbConnectionState).to.equal('connecting');
+        describe('#RFB (constructor)', function () {
+            let open, attach;
+            beforeEach(function () {
+                open = sinon.spy(Websock.prototype, 'open');
+                attach = sinon.spy(Websock.prototype, 'attach');
+            });
+            afterEach(function () {
+                open.restore();
+                attach.restore();
             });
 
             it('should actually connect to the websocket', function () {
-                const client = new RFB(document.createElement('div'), 'ws://HOST:8675/PATH');
-                sinon.spy(client._sock, 'open');
-                this.clock.tick();
-                expect(client._sock.open).to.have.been.calledOnce;
-                expect(client._sock.open).to.have.been.calledWith('ws://HOST:8675/PATH');
+                new RFB(document.createElement('div'), 'ws://HOST:8675/PATH');
+                expect(open).to.have.been.calledOnceWithExactly('ws://HOST:8675/PATH', []);
+            });
+
+            it('should pass on connection problems', function () {
+                open.restore();
+                open = sinon.stub(Websock.prototype, 'open');
+                open.throws(new Error('Failure'));
+                expect(() => new RFB(document.createElement('div'), 'ws://HOST:8675/PATH')).to.throw('Failure');
+            });
+
+            it('should handle WebSocket/RTCDataChannel objects', function () {
+                let sock = new FakeWebSocket('ws://HOST:8675/PATH', []);
+                new RFB(document.createElement('div'), sock);
+                expect(open).to.not.have.been.called;
+                expect(attach).to.have.been.calledOnceWithExactly(sock);
+            });
+
+            it('should handle already open WebSocket/RTCDataChannel objects', function () {
+                let sock = new FakeWebSocket('ws://HOST:8675/PATH', []);
+                sock._open();
+                const client = new RFB(document.createElement('div'), sock);
+                let callback = sinon.spy();
+                client.addEventListener('disconnect', callback);
+                expect(open).to.not.have.been.called;
+                expect(attach).to.have.been.calledOnceWithExactly(sock);
+                // Check if it is ready for some data
+                sock._receiveData(new Uint8Array(['R', 'F', 'B', '0', '0', '3', '0', '0', '8']));
+                expect(callback).to.not.have.been.called;
+            });
+
+            it('should refuse closed WebSocket/RTCDataChannel objects', function () {
+                let sock = new FakeWebSocket('ws://HOST:8675/PATH', []);
+                sock.readyState = WebSocket.CLOSED;
+                expect(() => new RFB(document.createElement('div'), sock)).to.throw();
+            });
+
+            it('should pass on attach problems', function () {
+                attach.restore();
+                attach = sinon.stub(Websock.prototype, 'attach');
+                attach.throws(new Error('Failure'));
+                let sock = new FakeWebSocket('ws://HOST:8675/PATH', []);
+                expect(() => new RFB(document.createElement('div'), sock)).to.throw('Failure');
             });
         });
 
         describe('#disconnect', function () {
             let client;
+            let close;
+
             beforeEach(function () {
                 client = makeRFB();
+                close = sinon.stub(Websock.prototype, "close");
+            });
+            afterEach(function () {
+                close.restore();
             });
 
-            it('should go to state "disconnecting" before "disconnected"', function () {
-                sinon.spy(client, '_updateConnectionState');
+            it('should start closing WebSocket', function () {
+                let callback = sinon.spy();
+                client.addEventListener('disconnect', callback);
                 client.disconnect();
-                expect(client._updateConnectionState).to.have.been.calledTwice;
-                expect(client._updateConnectionState.getCall(0).args[0])
-                    .to.equal('disconnecting');
-                expect(client._updateConnectionState.getCall(1).args[0])
-                    .to.equal('disconnected');
-                expect(client._rfbConnectionState).to.equal('disconnected');
+                expect(close).to.have.been.calledOnceWithExactly();
+                expect(callback).to.not.have.been.called;
+            });
+
+            it('should send disconnect event', function () {
+                let callback = sinon.spy();
+                client.addEventListener('disconnect', callback);
+                client.disconnect();
+                close.thisValues[0]._eventHandlers.close(new CloseEvent("close", { 'code': 1000, 'reason': "", 'wasClean': true }));
+                expect(callback).to.have.been.calledOnce;
+                expect(callback.args[0][0].detail.clean).to.be.true;
+            });
+
+            it('should force disconnect if disconnecting takes too long', function () {
+                let callback = sinon.spy();
+                client.addEventListener('disconnect', callback);
+                client.disconnect();
+                this.clock.tick(3 * 1000);
+                expect(callback).to.have.been.calledOnce;
+                expect(callback.args[0][0].detail.clean).to.be.true;
+            });
+
+            it('should not fail if disconnect completes before timeout', function () {
+                let callback = sinon.spy();
+                client.addEventListener('disconnect', callback);
+                client.disconnect();
+                client._updateConnectionState('disconnecting');
+                this.clock.tick(3 * 1000 / 2);
+                close.thisValues[0]._eventHandlers.close(new CloseEvent("close", { 'code': 1000, 'reason': "", 'wasClean': true }));
+                this.clock.tick(3 * 1000 / 2 + 1);
+                expect(callback).to.have.been.calledOnce;
+                expect(callback.args[0][0].detail.clean).to.be.true;
             });
 
             it('should unregister error event handler', function () {
@@ -315,6 +396,13 @@ describe('Remote Frame Buffer Protocol Client', function () {
                 client.focus();
                 expect(client._canvas.focus).to.have.been.calledOnce;
             });
+
+            it('should include focus options', function () {
+                client._canvas.focus = sinon.spy();
+                client.focus({ foobar: 12, gazonk: true });
+                expect(client._canvas.focus).to.have.been.calledOnce;
+                expect(client._canvas.focus).to.have.been.calledWith({ foobar: 12, gazonk: true});
+            });
         });
 
         describe('#blur', function () {
@@ -343,6 +431,22 @@ describe('Remote Frame Buffer Protocol Client', function () {
                     expect(RFB.messages.clientCutText).to.have.been.calledOnce;
                     expect(RFB.messages.clientCutText).to.have.been.calledWith(client._sock,
                                                                                new Uint8Array([97, 98, 99]));
+                });
+
+                it('should mask unsupported characters', function () {
+                    client.clipboardPasteFrom('abc€');
+
+                    expect(RFB.messages.clientCutText).to.have.been.calledOnce;
+                    expect(RFB.messages.clientCutText).to.have.been.calledWith(client._sock,
+                                                                               new Uint8Array([97, 98, 99, 63]));
+                });
+
+                it('should mask characters, not UTF-16 code points', function () {
+                    client.clipboardPasteFrom('😂');
+
+                    expect(RFB.messages.clientCutText).to.have.been.calledOnce;
+                    expect(RFB.messages.clientCutText).to.have.been.calledWith(client._sock,
+                                                                               new Uint8Array([63]));
                 });
 
                 it('should send an notify if extended clipboard is supported by server', function () {
@@ -409,6 +513,7 @@ describe('Remote Frame Buffer Protocol Client', function () {
 
     describe('Clipping', function () {
         let client;
+
         beforeEach(function () {
             client = makeRFB();
             container.style.width = '70px';
@@ -434,9 +539,8 @@ describe('Remote Frame Buffer Protocol Client', function () {
 
             container.style.width = '40px';
             container.style.height = '50px';
-            const event = new UIEvent('resize');
-            window.dispatchEvent(event);
-            clock.tick();
+            fakeResizeObserver.fire();
+            clock.tick(1000);
 
             expect(client._display.viewportChangeSize).to.have.been.calledOnce;
             expect(client._display.viewportChangeSize).to.have.been.calledWith(40, 50);
@@ -453,6 +557,10 @@ describe('Remote Frame Buffer Protocol Client', function () {
             sinon.spy(client._display, "viewportChangeSize");
 
             client._sock._websocket._receiveData(new Uint8Array(incoming));
+            // The resize will cause scrollbars on the container, this causes a
+            // resize observation in the browsers
+            fakeResizeObserver.fire();
+            clock.tick(1000);
 
             // FIXME: Display implicitly calls viewportChangeSize() when
             //        resizing the framebuffer, hence calledTwice.
@@ -466,9 +574,8 @@ describe('Remote Frame Buffer Protocol Client', function () {
 
             container.style.width = '40px';
             container.style.height = '50px';
-            const event = new UIEvent('resize');
-            window.dispatchEvent(event);
-            clock.tick();
+            fakeResizeObserver.fire();
+            clock.tick(1000);
 
             expect(client._display.viewportChangeSize).to.not.have.been.called;
         });
@@ -479,11 +586,36 @@ describe('Remote Frame Buffer Protocol Client', function () {
 
             container.style.width = '40px';
             container.style.height = '50px';
-            const event = new UIEvent('resize');
-            window.dispatchEvent(event);
-            clock.tick();
+            fakeResizeObserver.fire();
+            clock.tick(1000);
 
             expect(client._display.viewportChangeSize).to.not.have.been.called;
+        });
+
+        describe('Clipping and remote resize', function () {
+            beforeEach(function () {
+                // Given a remote (100, 100) larger than the container (70x80),
+                client._resize(100, 100);
+                client._supportsSetDesktopSize = true;
+                client.resizeSession = true;
+                sinon.spy(RFB.messages, "setDesktopSize");
+            });
+            afterEach(function () {
+                RFB.messages.setDesktopSize.restore();
+            });
+            it('should not change remote size when changing clipping', function () {
+                // When changing clipping the scrollbars of the container
+                // will appear and disappear and thus trigger resize observations
+                client.clipViewport = false;
+                fakeResizeObserver.fire();
+                clock.tick(1000);
+                client.clipViewport = true;
+                fakeResizeObserver.fire();
+                clock.tick(1000);
+
+                // Then no resize requests should be sent
+                expect(RFB.messages.setDesktopSize).to.not.have.been.called;
+            });
         });
 
         describe('Dragging', function () {
@@ -631,9 +763,8 @@ describe('Remote Frame Buffer Protocol Client', function () {
 
             container.style.width = '40px';
             container.style.height = '50px';
-            const event = new UIEvent('resize');
-            window.dispatchEvent(event);
-            clock.tick();
+            fakeResizeObserver.fire();
+            clock.tick(1000);
 
             expect(client._display.autoscale).to.have.been.calledOnce;
             expect(client._display.autoscale).to.have.been.calledWith(40, 50);
@@ -650,6 +781,10 @@ describe('Remote Frame Buffer Protocol Client', function () {
             sinon.spy(client._display, "autoscale");
 
             client._sock._websocket._receiveData(new Uint8Array(incoming));
+            // The resize will cause scrollbars on the container, this causes a
+            // resize observation in the browsers
+            fakeResizeObserver.fire();
+            clock.tick(1000);
 
             expect(client._display.autoscale).to.have.been.calledOnce;
             expect(client._display.autoscale).to.have.been.calledWith(70, 80);
@@ -662,9 +797,8 @@ describe('Remote Frame Buffer Protocol Client', function () {
 
             container.style.width = '40px';
             container.style.height = '50px';
-            const event = new UIEvent('resize');
-            window.dispatchEvent(event);
-            clock.tick();
+            fakeResizeObserver.fire();
+            clock.tick(1000);
 
             expect(client._display.autoscale).to.not.have.been.called;
         });
@@ -694,20 +828,39 @@ describe('Remote Frame Buffer Protocol Client', function () {
 
         it('should request a resize when initially connecting', function () {
             // Simple ExtendedDesktopSize FBU message
-            const incoming = [ 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-                               0x00, 0x04, 0x00, 0x04, 0xff, 0xff, 0xfe, 0xcc,
-                               0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                               0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x04,
-                               0x00, 0x00, 0x00, 0x00 ];
+            const incoming = [ 0x00,        // msg-type=FBU
+                               0x00,        // padding
+                               0x00, 0x01,  // number of rects = 1
+                               0x00, 0x00,  // reason = server initialized
+                               0x00, 0x00,  // status = no error
+                               0x00, 0x04,  // new width = 4
+                               0x00, 0x04,  // new height = 4
+                               0xff, 0xff,
+                               0xfe, 0xcc,  // enc = (-308) ExtendedDesktopSize
+                               0x01,        // number of screens = 1
+                               0x00, 0x00,
+                               0x00,        // padding
+                               0x00, 0x00,
+                               0x00, 0x00,  // screen id = 0
+                               0x00, 0x00,  // screen x = 0
+                               0x00, 0x00,  // screen y = 0
+                               0x00, 0x04,  // screen width = 4
+                               0x00, 0x04,  // screen height = 4
+                               0x00, 0x00,
+                               0x00, 0x00]; // screen flags
+
+            // This property is indirectly used as a marker for the first update
+            client._supportsSetDesktopSize = false;
 
             // First message should trigger a resize
 
-            client._supportsSetDesktopSize = false;
-
             client._sock._websocket._receiveData(new Uint8Array(incoming));
 
+            // It should match the current size of the container,
+            // not the reported size from the server
             expect(RFB.messages.setDesktopSize).to.have.been.calledOnce;
-            expect(RFB.messages.setDesktopSize).to.have.been.calledWith(sinon.match.object, 70, 80, 0, 0);
+            expect(RFB.messages.setDesktopSize).to.have.been.calledWith(
+                sinon.match.object, 70, 80, 0, 0);
 
             RFB.messages.setDesktopSize.resetHistory();
 
@@ -721,27 +874,53 @@ describe('Remote Frame Buffer Protocol Client', function () {
         it('should request a resize when the container resizes', function () {
             container.style.width = '40px';
             container.style.height = '50px';
-            const event = new UIEvent('resize');
-            window.dispatchEvent(event);
+            fakeResizeObserver.fire();
             clock.tick(1000);
 
             expect(RFB.messages.setDesktopSize).to.have.been.calledOnce;
             expect(RFB.messages.setDesktopSize).to.have.been.calledWith(sinon.match.object, 40, 50, 0, 0);
         });
 
+        it('should not request the same size twice', function () {
+            container.style.width = '40px';
+            container.style.height = '50px';
+            fakeResizeObserver.fire();
+            clock.tick(1000);
+
+            expect(RFB.messages.setDesktopSize).to.have.been.calledOnce;
+            expect(RFB.messages.setDesktopSize).to.have.been.calledWith(
+                sinon.match.object, 40, 50, 0, 0);
+
+            // Server responds with the requested size 40x50
+            const incoming = [ 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+                               0x00, 0x28, 0x00, 0x32, 0xff, 0xff, 0xfe, 0xcc,
+                               0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                               0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x32,
+                               0x00, 0x00, 0x00, 0x00];
+
+            client._sock._websocket._receiveData(new Uint8Array(incoming));
+            clock.tick(1000);
+
+            RFB.messages.setDesktopSize.resetHistory();
+
+            // size is still 40x50
+            fakeResizeObserver.fire();
+            clock.tick(1000);
+
+            expect(RFB.messages.setDesktopSize).to.not.have.been.called;
+        });
+
         it('should not resize until the container size is stable', function () {
             container.style.width = '20px';
             container.style.height = '30px';
-            const event1 = new UIEvent('resize');
-            window.dispatchEvent(event1);
+            fakeResizeObserver.fire();
             clock.tick(400);
 
             expect(RFB.messages.setDesktopSize).to.not.have.been.called;
 
             container.style.width = '40px';
             container.style.height = '50px';
-            const event2 = new UIEvent('resize');
-            window.dispatchEvent(event2);
+            fakeResizeObserver.fire();
             clock.tick(400);
 
             expect(RFB.messages.setDesktopSize).to.not.have.been.called;
@@ -757,8 +936,7 @@ describe('Remote Frame Buffer Protocol Client', function () {
 
             container.style.width = '40px';
             container.style.height = '50px';
-            const event = new UIEvent('resize');
-            window.dispatchEvent(event);
+            fakeResizeObserver.fire();
             clock.tick(1000);
 
             expect(RFB.messages.setDesktopSize).to.not.have.been.called;
@@ -769,8 +947,7 @@ describe('Remote Frame Buffer Protocol Client', function () {
 
             container.style.width = '40px';
             container.style.height = '50px';
-            const event = new UIEvent('resize');
-            window.dispatchEvent(event);
+            fakeResizeObserver.fire();
             clock.tick(1000);
 
             expect(RFB.messages.setDesktopSize).to.not.have.been.called;
@@ -781,84 +958,44 @@ describe('Remote Frame Buffer Protocol Client', function () {
 
             container.style.width = '40px';
             container.style.height = '50px';
-            const event = new UIEvent('resize');
-            window.dispatchEvent(event);
+            fakeResizeObserver.fire();
             clock.tick(1000);
 
             expect(RFB.messages.setDesktopSize).to.not.have.been.called;
         });
 
         it('should not try to override a server resize', function () {
-            // Simple ExtendedDesktopSize FBU message
+            // Simple ExtendedDesktopSize FBU message, new size: 100x100
             const incoming = [ 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-                               0x00, 0x04, 0x00, 0x04, 0xff, 0xff, 0xfe, 0xcc,
+                               0x00, 0x64, 0x00, 0x64, 0xff, 0xff, 0xfe, 0xcc,
                                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                                0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x04,
                                0x00, 0x00, 0x00, 0x00 ];
 
+            // Note that this will cause the browser to display scrollbars
+            // since the framebuffer is 100x100 and the container is 70x80.
+            // The usable space (clientWidth/clientHeight) will be even smaller
+            // due to the scrollbars taking up space.
             client._sock._websocket._receiveData(new Uint8Array(incoming));
+            // The scrollbars cause the ResizeObserver to fire
+            fakeResizeObserver.fire();
+            clock.tick(1000);
 
             expect(RFB.messages.setDesktopSize).to.not.have.been.called;
+
+            // An actual size change must not be ignored afterwards
+            container.style.width = '120px';
+            container.style.height = '130px';
+            fakeResizeObserver.fire();
+            clock.tick(1000);
+
+            expect(RFB.messages.setDesktopSize).to.have.been.calledOnce;
+            expect(RFB.messages.setDesktopSize.firstCall.args[1]).to.equal(120);
+            expect(RFB.messages.setDesktopSize.firstCall.args[2]).to.equal(130);
         });
     });
 
     describe('Misc Internals', function () {
-        describe('#_updateConnectionState', function () {
-            let client;
-            beforeEach(function () {
-                client = makeRFB();
-            });
-
-            it('should clear the disconnect timer if the state is not "disconnecting"', function () {
-                const spy = sinon.spy();
-                client._disconnTimer = setTimeout(spy, 50);
-                client._rfbConnectionState = 'connecting';
-                client._updateConnectionState('connected');
-                this.clock.tick(51);
-                expect(spy).to.not.have.been.called;
-                expect(client._disconnTimer).to.be.null;
-            });
-
-            it('should set the rfbConnectionState', function () {
-                client._rfbConnectionState = 'connecting';
-                client._updateConnectionState('connected');
-                expect(client._rfbConnectionState).to.equal('connected');
-            });
-
-            it('should not change the state when we are disconnected', function () {
-                client.disconnect();
-                expect(client._rfbConnectionState).to.equal('disconnected');
-                client._updateConnectionState('connecting');
-                expect(client._rfbConnectionState).to.not.equal('connecting');
-            });
-
-            it('should ignore state changes to the same state', function () {
-                const connectSpy = sinon.spy();
-                client.addEventListener("connect", connectSpy);
-
-                expect(client._rfbConnectionState).to.equal('connected');
-                client._updateConnectionState('connected');
-                expect(connectSpy).to.not.have.been.called;
-
-                client.disconnect();
-
-                const disconnectSpy = sinon.spy();
-                client.addEventListener("disconnect", disconnectSpy);
-
-                expect(client._rfbConnectionState).to.equal('disconnected');
-                client._updateConnectionState('disconnected');
-                expect(disconnectSpy).to.not.have.been.called;
-            });
-
-            it('should ignore illegal state changes', function () {
-                const spy = sinon.spy();
-                client.addEventListener("disconnect", spy);
-                client._updateConnectionState('disconnected');
-                expect(client._rfbConnectionState).to.not.equal('disconnected');
-                expect(spy).to.not.have.been.called;
-            });
-        });
-
         describe('#_fail', function () {
             let client;
             beforeEach(function () {
@@ -899,106 +1036,6 @@ describe('Remote Frame Buffer Protocol Client', function () {
         });
     });
 
-    describe('Connection States', function () {
-        describe('connecting', function () {
-            it('should open the websocket connection', function () {
-                const client = new RFB(document.createElement('div'),
-                                       'ws://HOST:8675/PATH');
-                sinon.spy(client._sock, 'open');
-                this.clock.tick();
-                expect(client._sock.open).to.have.been.calledOnce;
-            });
-        });
-
-        describe('connected', function () {
-            let client;
-            beforeEach(function () {
-                client = makeRFB();
-            });
-
-            it('should result in a connect event if state becomes connected', function () {
-                const spy = sinon.spy();
-                client.addEventListener("connect", spy);
-                client._rfbConnectionState = 'connecting';
-                client._updateConnectionState('connected');
-                expect(spy).to.have.been.calledOnce;
-            });
-
-            it('should not result in a connect event if the state is not "connected"', function () {
-                const spy = sinon.spy();
-                client.addEventListener("connect", spy);
-                client._sock._websocket.open = () => {};  // explicitly don't call onopen
-                client._updateConnectionState('connecting');
-                expect(spy).to.not.have.been.called;
-            });
-        });
-
-        describe('disconnecting', function () {
-            let client;
-            beforeEach(function () {
-                client = makeRFB();
-            });
-
-            it('should force disconnect if we do not call Websock.onclose within the disconnection timeout', function () {
-                sinon.spy(client, '_updateConnectionState');
-                client._sock._websocket.close = () => {};  // explicitly don't call onclose
-                client._updateConnectionState('disconnecting');
-                this.clock.tick(3 * 1000);
-                expect(client._updateConnectionState).to.have.been.calledTwice;
-                expect(client._rfbDisconnectReason).to.not.equal("");
-                expect(client._rfbConnectionState).to.equal("disconnected");
-            });
-
-            it('should not fail if Websock.onclose gets called within the disconnection timeout', function () {
-                client._updateConnectionState('disconnecting');
-                this.clock.tick(3 * 1000 / 2);
-                client._sock._websocket.close();
-                this.clock.tick(3 * 1000 / 2 + 1);
-                expect(client._rfbConnectionState).to.equal('disconnected');
-            });
-
-            it('should close the WebSocket connection', function () {
-                sinon.spy(client._sock, 'close');
-                client._updateConnectionState('disconnecting');
-                expect(client._sock.close).to.have.been.calledOnce;
-            });
-
-            it('should not result in a disconnect event', function () {
-                const spy = sinon.spy();
-                client.addEventListener("disconnect", spy);
-                client._sock._websocket.close = () => {};  // explicitly don't call onclose
-                client._updateConnectionState('disconnecting');
-                expect(spy).to.not.have.been.called;
-            });
-        });
-
-        describe('disconnected', function () {
-            let client;
-            beforeEach(function () {
-                client = new RFB(document.createElement('div'), 'ws://HOST:8675/PATH');
-            });
-
-            it('should result in a disconnect event if state becomes "disconnected"', function () {
-                const spy = sinon.spy();
-                client.addEventListener("disconnect", spy);
-                client._rfbConnectionState = 'disconnecting';
-                client._updateConnectionState('disconnected');
-                expect(spy).to.have.been.calledOnce;
-                expect(spy.args[0][0].detail.clean).to.be.true;
-            });
-
-            it('should result in a disconnect event without msg when no reason given', function () {
-                const spy = sinon.spy();
-                client.addEventListener("disconnect", spy);
-                client._rfbConnectionState = 'disconnecting';
-                client._rfbDisconnectReason = "";
-                client._updateConnectionState('disconnected');
-                expect(spy).to.have.been.calledOnce;
-                expect(spy.args[0].length).to.equal(1);
-            });
-        });
-    });
-
     describe('Protocol Initialization States', function () {
         let client;
         beforeEach(function () {
@@ -1006,17 +1043,21 @@ describe('Remote Frame Buffer Protocol Client', function () {
             client._rfbConnectionState = 'connecting';
         });
 
-        describe('ProtocolVersion', function () {
-            function sendVer(ver, client) {
-                const arr = new Uint8Array(12);
-                for (let i = 0; i < ver.length; i++) {
-                    arr[i+4] = ver.charCodeAt(i);
-                }
-                arr[0] = 'R'; arr[1] = 'F'; arr[2] = 'B'; arr[3] = ' ';
-                arr[11] = '\n';
-                client._sock._websocket._receiveData(arr);
+        function sendVer(ver, client) {
+            const arr = new Uint8Array(12);
+            for (let i = 0; i < ver.length; i++) {
+                arr[i+4] = ver.charCodeAt(i);
             }
+            arr[0] = 'R'; arr[1] = 'F'; arr[2] = 'B'; arr[3] = ' ';
+            arr[11] = '\n';
+            client._sock._websocket._receiveData(arr);
+        }
 
+        function sendSecurity(type, cl) {
+            cl._sock._websocket._receiveData(new Uint8Array([1, type]));
+        }
+
+        describe('ProtocolVersion', function () {
             describe('version parsing', function () {
                 it('should interpret version 003.003 as version 3.3', function () {
                     sendVer('003.003', client);
@@ -1028,9 +1069,9 @@ describe('Remote Frame Buffer Protocol Client', function () {
                     expect(client._rfbVersion).to.equal(3.3);
                 });
 
-                it('should interpret version 003.889 as version 3.3', function () {
+                it('should interpret version 003.889 as version 3.8', function () {
                     sendVer('003.889', client);
-                    expect(client._rfbVersion).to.equal(3.3);
+                    expect(client._rfbVersion).to.equal(3.8);
                 });
 
                 it('should interpret version 003.007 as version 3.7', function () {
@@ -1107,44 +1148,24 @@ describe('Remote Frame Buffer Protocol Client', function () {
 
         describe('Security', function () {
             beforeEach(function () {
-                client._rfbInitState = 'Security';
+                sendVer('003.008\n', client);
+                client._sock._websocket._getSentData();
             });
 
-            it('should simply receive the auth scheme when for versions < 3.7', function () {
-                client._rfbVersion = 3.6;
-                const authSchemeRaw = [1, 2, 3, 4];
-                const authScheme = (authSchemeRaw[0] << 24) + (authSchemeRaw[1] << 16) +
-                                  (authSchemeRaw[2] << 8) + authSchemeRaw[3];
-                client._sock._websocket._receiveData(new Uint8Array(authSchemeRaw));
-                expect(client._rfbAuthScheme).to.equal(authScheme);
-            });
-
-            it('should prefer no authentication is possible', function () {
-                client._rfbVersion = 3.7;
-                const authSchemes = [2, 1, 3];
+            it('should respect server preference order', function () {
+                const authSchemes = [ 6, 79, 30, 188, 16, 6, 1 ];
                 client._sock._websocket._receiveData(new Uint8Array(authSchemes));
-                expect(client._rfbAuthScheme).to.equal(1);
-                expect(client._sock).to.have.sent(new Uint8Array([1, 1]));
+                expect(client._sock).to.have.sent(new Uint8Array([30]));
             });
 
-            it('should choose for the most prefered scheme possible for versions >= 3.7', function () {
-                client._rfbVersion = 3.7;
-                const authSchemes = [2, 22, 16];
-                client._sock._websocket._receiveData(new Uint8Array(authSchemes));
-                expect(client._rfbAuthScheme).to.equal(22);
-                expect(client._sock).to.have.sent(new Uint8Array([22]));
-            });
-
-            it('should fail if there are no supported schemes for versions >= 3.7', function () {
+            it('should fail if there are no supported schemes', function () {
                 sinon.spy(client, "_fail");
-                client._rfbVersion = 3.7;
                 const authSchemes = [1, 32];
                 client._sock._websocket._receiveData(new Uint8Array(authSchemes));
                 expect(client._fail).to.have.been.calledOnce;
             });
 
-            it('should fail with the appropriate message if no types are sent for versions >= 3.7', function () {
-                client._rfbVersion = 3.7;
+            it('should fail with the appropriate message if no types are sent', function () {
                 const failureData = [0, 0, 0, 0, 6, 119, 104, 111, 111, 112, 115];
                 sinon.spy(client, '_fail');
                 client._sock._websocket._receiveData(new Uint8Array(failureData));
@@ -1155,7 +1176,6 @@ describe('Remote Frame Buffer Protocol Client', function () {
             });
 
             it('should transition to the Authentication state and continue on successful negotiation', function () {
-                client._rfbVersion = 3.7;
                 const authSchemes = [1, 1];
                 client._negotiateAuthentication = sinon.spy();
                 client._sock._websocket._receiveData(new Uint8Array(authSchemes));
@@ -1164,17 +1184,8 @@ describe('Remote Frame Buffer Protocol Client', function () {
             });
         });
 
-        describe('Authentication', function () {
-            beforeEach(function () {
-                client._rfbInitState = 'Security';
-            });
-
-            function sendSecurity(type, cl) {
-                cl._sock._websocket._receiveData(new Uint8Array([1, type]));
-            }
-
+        describe('Legacy Authentication', function () {
             it('should fail on auth scheme 0 (pre 3.7) with the given message', function () {
-                client._rfbVersion = 3.6;
                 const errMsg = "Whoopsies";
                 const data = [0, 0, 0, 0];
                 const errLen = errMsg.length;
@@ -1183,37 +1194,42 @@ describe('Remote Frame Buffer Protocol Client', function () {
                     data.push(errMsg.charCodeAt(i));
                 }
 
+                sendVer('003.006\n', client);
+                client._sock._websocket._getSentData();
+
                 sinon.spy(client, '_fail');
                 client._sock._websocket._receiveData(new Uint8Array(data));
                 expect(client._fail).to.have.been.calledWith(
                     'Security negotiation failed on authentication scheme (reason: Whoopsies)');
             });
 
-            it('should transition straight to SecurityResult on "no auth" (1) for versions >= 3.8', function () {
-                client._rfbVersion = 3.8;
+            it('should transition straight to ServerInitialisation on "no auth" for versions < 3.7', function () {
+                sendVer('003.006\n', client);
+                client._sock._websocket._getSentData();
+
+                client._sock._websocket._receiveData(new Uint8Array([0, 0, 0, 1]));
+                expect(client._rfbInitState).to.equal('ServerInitialisation');
+            });
+        });
+
+        describe('Authentication', function () {
+            beforeEach(function () {
+                sendVer('003.008\n', client);
+                client._sock._websocket._getSentData();
+            });
+
+            it('should transition straight to SecurityResult on "no auth" (1)', function () {
                 sendSecurity(1, client);
                 expect(client._rfbInitState).to.equal('SecurityResult');
             });
 
-            it('should transition straight to ServerInitialisation on "no auth" for versions < 3.8', function () {
-                client._rfbVersion = 3.7;
-                sendSecurity(1, client);
-                expect(client._rfbInitState).to.equal('ServerInitialisation');
-            });
-
             it('should fail on an unknown auth scheme', function () {
                 sinon.spy(client, "_fail");
-                client._rfbVersion = 3.8;
                 sendSecurity(57, client);
                 expect(client._fail).to.have.been.calledOnce;
             });
 
             describe('VNC Authentication (type 2) Handler', function () {
-                beforeEach(function () {
-                    client._rfbInitState = 'Security';
-                    client._rfbVersion = 3.8;
-                });
-
                 it('should fire the credentialsrequired event if missing a password', function () {
                     const spy = sinon.spy();
                     client.addEventListener("credentialsrequired", spy);
@@ -1253,12 +1269,154 @@ describe('Remote Frame Buffer Protocol Client', function () {
                 });
             });
 
-            describe('XVP Authentication (type 22) Handler', function () {
-                beforeEach(function () {
-                    client._rfbInitState = 'Security';
-                    client._rfbVersion = 3.8;
+            describe('ARD Authentication (type 30) Handler', function () {
+                it('should fire the credentialsrequired event if all credentials are missing', function () {
+                    const spy = sinon.spy();
+                    client.addEventListener("credentialsrequired", spy);
+                    client._rfbCredentials = {};
+                    sendSecurity(30, client);
+
+                    expect(client._rfbCredentials).to.be.empty;
+                    expect(spy).to.have.been.calledOnce;
+                    expect(spy.args[0][0].detail.types).to.have.members(["username", "password"]);
                 });
 
+                it('should fire the credentialsrequired event if some credentials are missing', function () {
+                    const spy = sinon.spy();
+                    client.addEventListener("credentialsrequired", spy);
+                    client._rfbCredentials = { password: 'password'};
+                    sendSecurity(30, client);
+
+                    expect(spy).to.have.been.calledOnce;
+                    expect(spy.args[0][0].detail.types).to.have.members(["username", "password"]);
+                });
+
+                it('should return properly encrypted credentials and public key', async function () {
+                    client._rfbCredentials = { username: 'user',
+                                               password: 'password' };
+                    sendSecurity(30, client);
+
+                    expect(client._sock).to.have.sent([30]);
+
+                    function byteArray(length) {
+                        return Array.from(new Uint8Array(length).keys());
+                    }
+
+                    let generator = [127, 255];
+                    let prime = byteArray(128);
+                    let serverPrivateKey = byteArray(128);
+                    let serverPublicKey = client._modPow(generator, serverPrivateKey, prime);
+
+                    let clientPrivateKey = byteArray(128);
+                    let clientPublicKey = client._modPow(generator, clientPrivateKey, prime);
+
+                    let padding = Array.from(byteArray(64), byte => String.fromCharCode(65+byte%26)).join('');
+
+                    await client._negotiateARDAuthAsync(generator, 128, prime, serverPublicKey, clientPrivateKey, padding);
+
+                    client._negotiateARDAuth();
+
+                    expect(client._rfbInitState).to.equal('SecurityResult');
+
+                    let expectEncrypted = new Uint8Array([
+                        232, 234, 159, 162, 170, 180, 138, 104, 164, 49, 53, 96, 20, 36, 21, 15,
+                        217, 219, 107, 173, 196, 60, 96, 142, 215, 71, 13, 185, 185, 47, 5, 175,
+                        151, 30, 194, 55, 173, 214, 141, 161, 36, 138, 146, 3, 178, 89, 43, 248,
+                        131, 134, 205, 174, 9, 150, 171, 74, 222, 201, 20, 2, 30, 168, 162, 123,
+                        46, 86, 81, 221, 44, 211, 180, 247, 221, 61, 95, 155, 157, 241, 76, 76,
+                        49, 217, 234, 75, 147, 237, 199, 159, 93, 140, 191, 174, 52, 90, 133, 58,
+                        243, 81, 112, 182, 64, 62, 149, 7, 151, 28, 36, 161, 247, 247, 36, 96,
+                        230, 95, 58, 207, 46, 183, 100, 139, 143, 155, 224, 43, 219, 3, 71, 139]);
+
+                    let output = new Uint8Array(256);
+                    output.set(expectEncrypted, 0);
+                    output.set(clientPublicKey, 128);
+
+                    expect(client._sock).to.have.sent(output);
+                });
+            });
+
+            describe('MSLogonII Authentication (type 113) Handler', function () {
+                function fakeGetRandomValues(arr) {
+                    if (arr.length == 8) {
+                        arr.set(new Uint8Array([0, 0, 0, 0, 5, 6, 7, 8]));
+                    } else if (arr.length == 256) {
+                        arr.set(new Uint8Array(256));
+                    } else if (arr.length == 64) {
+                        arr.set(new Uint8Array(64));
+                    }
+                    return arr;
+                }
+                const expected = new Uint8Array([
+                    0x00, 0x00, 0x00, 0x00, 0x0a, 0xbc, 0x7c, 0xfd,
+                    0x58, 0x34, 0xd2, 0x24, 0x44, 0x60, 0xf0, 0xd1,
+                    0xa3, 0x73, 0x32, 0x02, 0x07, 0xce, 0xc1, 0x3f,
+                    0x10, 0x53, 0xf1, 0xdd, 0x99, 0xad, 0x44, 0x18,
+                    0xa1, 0xc4, 0xac, 0xc1, 0x1c, 0x13, 0x11, 0x85,
+                    0x3a, 0x6f, 0xcb, 0xc6, 0xb1, 0x6c, 0x68, 0x47,
+                    0x85, 0x01, 0xbb, 0xfa, 0x23, 0x8c, 0x59, 0x47,
+                    0x67, 0x47, 0x56, 0x6e, 0x6f, 0x9f, 0x07, 0x76,
+                    0x2e, 0x90, 0x1e, 0xdc, 0x80, 0xc4, 0x4b, 0x72,
+                    0xd2, 0xd5, 0xcd, 0x4b, 0x14, 0xff, 0x05, 0x8b,
+                    0x8d, 0xf1, 0x9b, 0xe0, 0xff, 0xa5, 0x3b, 0x56,
+                    0xb9, 0x6f, 0x84, 0x3e, 0x15, 0x84, 0x31, 0x4e,
+                    0x10, 0x0b, 0x56, 0xf4, 0x10, 0x05, 0x02, 0xc7,
+                    0x05, 0x0b, 0xc9, 0x66, 0x75, 0x32, 0xd3, 0x74,
+                    0xfc, 0x8c, 0xcf, 0xbd, 0x2d, 0x53, 0xd7, 0xa7,
+                    0xca, 0x82, 0x12, 0xce, 0xbb, 0x33, 0x09, 0x3f,
+                    0xff, 0x76, 0x7c, 0xdf, 0x2c, 0x2f, 0x4d, 0x95,
+                    0x86, 0xe4, 0x10, 0x07, 0x75, 0x1a, 0x6d, 0xdb,
+                    0x05, 0x91, 0x70, 0x34, 0x5c, 0x12, 0xbc, 0x4e,
+                    0x5e, 0xd0, 0x21, 0x39, 0x25, 0x2b, 0x62, 0x19,
+                    0x29, 0xa5, 0xe6, 0x93, 0x7b, 0xf8, 0x3f, 0xcf,
+                    0xd7, 0x3f, 0x0c, 0xd2, 0x68, 0x2d, 0x1e, 0x01,
+                    0x1a, 0x31, 0xc1, 0x59, 0x04, 0x06, 0xf6, 0x3b,
+                    0xec, 0x38, 0xef, 0x1b, 0x5b, 0x39, 0x88, 0xd3,
+                    0xe0, 0x5b, 0xb9, 0xef, 0xc3, 0x82, 0xfa, 0xdf,
+                    0x04, 0xf7, 0x65, 0x56, 0x82, 0x77, 0xfd, 0x63,
+                    0x10, 0xd7, 0xab, 0x0b, 0x5e, 0xd9, 0x07, 0x81,
+                    0x9d, 0xce, 0x26, 0xfb, 0x5d, 0xa8, 0x59, 0x2a,
+                    0xd9, 0xb8, 0xac, 0xcd, 0x6e, 0x61, 0x07, 0x39,
+                    0x9f, 0x8d, 0xdf, 0x53, 0x44, 0xab, 0x28, 0x01,
+                    0x86, 0x4d, 0x07, 0x8a, 0x5b, 0xdd, 0xc1, 0x18,
+                    0x29, 0xaa, 0xa2, 0xbe, 0xe2, 0x9c, 0x9e, 0xb0,
+                    0xb3, 0x2b, 0x2c, 0x93, 0x3e, 0x82, 0x07, 0xa6,
+                    0xef, 0x21, 0x2c, 0xa7, 0xf0, 0x65, 0xba, 0xda,
+                    0x13, 0xe4, 0x41, 0x87, 0x36, 0x1c, 0xa5, 0x81,
+                    0xae, 0xf3, 0x3e, 0xda, 0x03, 0x09, 0x63, 0x4b,
+                    0xb5, 0x29, 0x49, 0xfa, 0xbb, 0xa6, 0x31, 0x3c,
+                    0xc8, 0x15, 0xfb, 0xfc, 0xd6, 0xff, 0x04, 0x92,
+                    0x56, 0xbc, 0x66, 0xf1, 0x78, 0xfb, 0x14, 0x79,
+                    0x48, 0xd2, 0xcf, 0x87, 0x60, 0x23, 0xcf, 0xdb,
+                    0x1b, 0xad, 0x42, 0x32, 0x4e, 0x6d, 0x1f, 0x49,
+                ]);
+                before(() => {
+                    sinon.stub(window.crypto, "getRandomValues").callsFake(fakeGetRandomValues);
+                });
+                after(() => {
+                    window.crypto.getRandomValues.restore();
+                });
+                it('should send public value and encrypted credentials', function () {
+                    client._rfbCredentials = { username: 'username',
+                                               password: 'password123456' };
+                    sendSecurity(113, client);
+
+                    expect(client._sock).to.have.sent([113]);
+
+                    const g = new Uint8Array([0, 0, 0, 0, 0, 1, 0, 1]);
+                    const p = new Uint8Array([0, 0, 0, 0, 0x25, 0x18, 0x26, 0x17]);
+                    const A = new Uint8Array([0, 0, 0, 0, 0x0e, 0x12, 0xd0, 0xf5]);
+
+                    client._sock._websocket._receiveData(g);
+                    client._sock._websocket._receiveData(p);
+                    client._sock._websocket._receiveData(A);
+
+                    expect(client._sock).to.have.sent(expected);
+                    expect(client._rfbInitState).to.equal('SecurityResult');
+                });
+            });
+
+            describe('XVP Authentication (type 22) Handler', function () {
                 it('should fall through to standard VNC authentication upon completion', function () {
                     client._rfbCredentials = { username: 'user',
                                                target: 'target',
@@ -1307,8 +1465,6 @@ describe('Remote Frame Buffer Protocol Client', function () {
 
             describe('TightVNC Authentication (type 16) Handler', function () {
                 beforeEach(function () {
-                    client._rfbInitState = 'Security';
-                    client._rfbVersion = 3.8;
                     sendSecurity(16, client);
                     client._sock._websocket._getSentData();  // skip the security reply
                 });
@@ -1391,11 +1547,178 @@ describe('Remote Frame Buffer Protocol Client', function () {
                     expect(client._fail).to.have.been.calledOnce;
                 });
             });
+
+            describe('VeNCrypt Authentication (type 19) Handler', function () {
+                beforeEach(function () {
+                    sendSecurity(19, client);
+                    expect(client._sock).to.have.sent(new Uint8Array([19]));
+                });
+
+                it('should fail with non-0.2 versions', function () {
+                    sinon.spy(client, "_fail");
+                    client._sock._websocket._receiveData(new Uint8Array([0, 1]));
+                    expect(client._fail).to.have.been.calledOnce;
+                });
+
+                it('should fail if there are no supported subtypes', function () {
+                    // VeNCrypt version
+                    client._sock._websocket._receiveData(new Uint8Array([0, 2]));
+                    expect(client._sock).to.have.sent(new Uint8Array([0, 2]));
+                    // Server ACK.
+                    client._sock._websocket._receiveData(new Uint8Array([0]));
+                    // Subtype list
+                    sinon.spy(client, "_fail");
+                    client._sock._websocket._receiveData(new Uint8Array([2, 0, 0, 0, 9, 0, 0, 1, 4]));
+                    expect(client._fail).to.have.been.calledOnce;
+                });
+
+                it('should support standard types', function () {
+                    // VeNCrypt version
+                    client._sock._websocket._receiveData(new Uint8Array([0, 2]));
+                    expect(client._sock).to.have.sent(new Uint8Array([0, 2]));
+                    // Server ACK.
+                    client._sock._websocket._receiveData(new Uint8Array([0]));
+                    // Subtype list
+                    client._sock._websocket._receiveData(new Uint8Array([2, 0, 0, 0, 2, 0, 0, 1, 4]));
+
+                    let expectedResponse = [];
+                    push32(expectedResponse, 2); // Chosen subtype.
+
+                    expect(client._sock).to.have.sent(new Uint8Array(expectedResponse));
+                });
+
+                it('should respect server preference order', function () {
+                    // VeNCrypt version
+                    client._sock._websocket._receiveData(new Uint8Array([0, 2]));
+                    expect(client._sock).to.have.sent(new Uint8Array([0, 2]));
+                    // Server ACK.
+                    client._sock._websocket._receiveData(new Uint8Array([0]));
+                    // Subtype list
+                    let subtypes = [ 6 ];
+                    push32(subtypes, 79);
+                    push32(subtypes, 30);
+                    push32(subtypes, 188);
+                    push32(subtypes, 256);
+                    push32(subtypes, 6);
+                    push32(subtypes, 1);
+                    client._sock._websocket._receiveData(new Uint8Array(subtypes));
+
+                    let expectedResponse = [];
+                    push32(expectedResponse, 30); // Chosen subtype.
+
+                    expect(client._sock).to.have.sent(new Uint8Array(expectedResponse));
+                });
+
+                it('should ignore redundant VeNCrypt subtype', function () {
+                    // VeNCrypt version
+                    client._sock._websocket._receiveData(new Uint8Array([0, 2]));
+                    expect(client._sock).to.have.sent(new Uint8Array([0, 2]));
+                    // Server ACK.
+                    client._sock._websocket._receiveData(new Uint8Array([0]));
+                    // Subtype list
+                    client._sock._websocket._receiveData(new Uint8Array([2, 0, 0, 0, 19, 0, 0, 0, 2]));
+
+                    let expectedResponse = [];
+                    push32(expectedResponse, 2); // Chosen subtype.
+
+                    expect(client._sock).to.have.sent(new Uint8Array(expectedResponse));
+                });
+
+                it('should support Plain authentication', function () {
+                    client._rfbCredentials = { username: 'username', password: 'password' };
+                    // VeNCrypt version
+                    client._sock._websocket._receiveData(new Uint8Array([0, 2]));
+                    expect(client._sock).to.have.sent(new Uint8Array([0, 2]));
+                    // Server ACK.
+                    client._sock._websocket._receiveData(new Uint8Array([0]));
+                    // Subtype list.
+                    client._sock._websocket._receiveData(new Uint8Array([1, 0, 0, 1, 0]));
+
+                    const expectedResponse = [];
+                    push32(expectedResponse, 256); // Chosen subtype.
+                    push32(expectedResponse, client._rfbCredentials.username.length);
+                    push32(expectedResponse, client._rfbCredentials.password.length);
+                    pushString(expectedResponse, client._rfbCredentials.username);
+                    pushString(expectedResponse, client._rfbCredentials.password);
+                    expect(client._sock).to.have.sent(new Uint8Array(expectedResponse));
+
+                    client._initMsg = sinon.spy();
+                    client._sock._websocket._receiveData(new Uint8Array([0, 0, 0, 0]));
+                    expect(client._initMsg).to.have.been.called;
+                });
+
+                it('should support Plain authentication with an empty password', function () {
+                    client._rfbCredentials = { username: 'username', password: '' };
+                    // VeNCrypt version
+                    client._sock._websocket._receiveData(new Uint8Array([0, 2]));
+                    expect(client._sock).to.have.sent(new Uint8Array([0, 2]));
+                    // Server ACK.
+                    client._sock._websocket._receiveData(new Uint8Array([0]));
+                    // Subtype list.
+                    client._sock._websocket._receiveData(new Uint8Array([1, 0, 0, 1, 0]));
+
+                    const expectedResponse = [];
+                    push32(expectedResponse, 256); // Chosen subtype.
+                    push32(expectedResponse, client._rfbCredentials.username.length);
+                    push32(expectedResponse, client._rfbCredentials.password.length);
+                    pushString(expectedResponse, client._rfbCredentials.username);
+                    pushString(expectedResponse, client._rfbCredentials.password);
+                    expect(client._sock).to.have.sent(new Uint8Array(expectedResponse));
+
+                    client._initMsg = sinon.spy();
+                    client._sock._websocket._receiveData(new Uint8Array([0, 0, 0, 0]));
+                    expect(client._initMsg).to.have.been.called;
+                });
+
+                it('should support Plain authentication with a very long username and password', function () {
+                    client._rfbCredentials = { username: 'a'.repeat(300), password: 'a'.repeat(300) };
+                    // VeNCrypt version
+                    client._sock._websocket._receiveData(new Uint8Array([0, 2]));
+                    expect(client._sock).to.have.sent(new Uint8Array([0, 2]));
+                    // Server ACK.
+                    client._sock._websocket._receiveData(new Uint8Array([0]));
+                    // Subtype list.
+                    client._sock._websocket._receiveData(new Uint8Array([1, 0, 0, 1, 0]));
+
+                    const expectedResponse = [];
+                    push32(expectedResponse, 256); // Chosen subtype.
+                    push32(expectedResponse, client._rfbCredentials.username.length);
+                    push32(expectedResponse, client._rfbCredentials.password.length);
+                    pushString(expectedResponse, client._rfbCredentials.username);
+                    pushString(expectedResponse, client._rfbCredentials.password);
+                    expect(client._sock).to.have.sent(new Uint8Array(expectedResponse));
+
+                    client._initMsg = sinon.spy();
+                    client._sock._websocket._receiveData(new Uint8Array([0, 0, 0, 0]));
+                    expect(client._initMsg).to.have.been.called;
+                });
+            });
+        });
+
+        describe('Legacy SecurityResult', function () {
+            beforeEach(function () {
+                sendVer('003.007\n', client);
+                client._sock._websocket._getSentData();
+                sendSecurity(1, client);
+                client._sock._websocket._getSentData();
+            });
+
+            it('should not include reason in securityfailure event', function () {
+                const spy = sinon.spy();
+                client.addEventListener("securityfailure", spy);
+                client._sock._websocket._receiveData(new Uint8Array([0, 0, 0, 2]));
+                expect(spy).to.have.been.calledOnce;
+                expect(spy.args[0][0].detail.status).to.equal(2);
+                expect('reason' in spy.args[0][0].detail).to.be.false;
+            });
         });
 
         describe('SecurityResult', function () {
             beforeEach(function () {
-                client._rfbInitState = 'SecurityResult';
+                sendVer('003.008\n', client);
+                client._sock._websocket._getSentData();
+                sendSecurity(1, client);
+                client._sock._websocket._getSentData();
             });
 
             it('should fall through to ServerInitialisation on a response code of 0', function () {
@@ -1403,58 +1726,24 @@ describe('Remote Frame Buffer Protocol Client', function () {
                 expect(client._rfbInitState).to.equal('ServerInitialisation');
             });
 
-            it('should fail on an error code of 1 with the given message for versions >= 3.8', function () {
-                client._rfbVersion = 3.8;
-                sinon.spy(client, '_fail');
-                const failureData = [0, 0, 0, 1, 0, 0, 0, 6, 119, 104, 111, 111, 112, 115];
-                client._sock._websocket._receiveData(new Uint8Array(failureData));
-                expect(client._fail).to.have.been.calledWith(
-                    'Security negotiation failed on security result (reason: whoops)');
-            });
-
-            it('should fail on an error code of 1 with a standard message for version < 3.8', function () {
-                sinon.spy(client, '_fail');
-                client._rfbVersion = 3.7;
-                client._sock._websocket._receiveData(new Uint8Array([0, 0, 0, 1]));
-                expect(client._fail).to.have.been.calledWith(
-                    'Security handshake failed');
-            });
-
-            it('should result in securityfailure event when receiving a non zero status', function () {
-                const spy = sinon.spy();
-                client.addEventListener("securityfailure", spy);
-                client._sock._websocket._receiveData(new Uint8Array([0, 0, 0, 2]));
-                expect(spy).to.have.been.calledOnce;
-                expect(spy.args[0][0].detail.status).to.equal(2);
-            });
-
             it('should include reason when provided in securityfailure event', function () {
-                client._rfbVersion = 3.8;
                 const spy = sinon.spy();
                 client.addEventListener("securityfailure", spy);
                 const failureData = [0, 0, 0, 1, 0, 0, 0, 12, 115, 117, 99, 104,
                                      32, 102, 97, 105, 108, 117, 114, 101];
                 client._sock._websocket._receiveData(new Uint8Array(failureData));
+                expect(spy).to.have.been.calledOnce;
                 expect(spy.args[0][0].detail.status).to.equal(1);
                 expect(spy.args[0][0].detail.reason).to.equal('such failure');
             });
 
             it('should not include reason when length is zero in securityfailure event', function () {
-                client._rfbVersion = 3.9;
                 const spy = sinon.spy();
                 client.addEventListener("securityfailure", spy);
                 const failureData = [0, 0, 0, 1, 0, 0, 0, 0];
                 client._sock._websocket._receiveData(new Uint8Array(failureData));
+                expect(spy).to.have.been.calledOnce;
                 expect(spy.args[0][0].detail.status).to.equal(1);
-                expect('reason' in spy.args[0][0].detail).to.be.false;
-            });
-
-            it('should not include reason in securityfailure event for version < 3.8', function () {
-                client._rfbVersion = 3.6;
-                const spy = sinon.spy();
-                client.addEventListener("securityfailure", spy);
-                client._sock._websocket._receiveData(new Uint8Array([0, 0, 0, 2]));
-                expect(spy.args[0][0].detail.status).to.equal(2);
                 expect('reason' in spy.args[0][0].detail).to.be.false;
             });
         });
@@ -1575,12 +1864,10 @@ describe('Remote Frame Buffer Protocol Client', function () {
                 expect(client._display.resize).to.have.been.calledWith(27, 32);
             });
 
-            it('should grab the mouse and keyboard', function () {
+            it('should grab the keyboard', function () {
                 sinon.spy(client._keyboard, 'grab');
-                sinon.spy(client._mouse, 'grab');
                 sendServerInit({}, client);
                 expect(client._keyboard.grab).to.have.been.calledOnce;
-                expect(client._mouse.grab).to.have.been.calledOnce;
             });
 
             describe('Initial Update Request', function () {
@@ -1605,6 +1892,10 @@ describe('Remote Frame Buffer Protocol Client', function () {
                     expect(RFB.messages.pixelFormat).to.have.been.calledBefore(RFB.messages.clientEncodings);
                     expect(RFB.messages.clientEncodings).to.have.been.calledOnce;
                     expect(RFB.messages.clientEncodings.getCall(0).args[1]).to.include(encodings.encodingTight);
+                    RFB.messages.clientEncodings.getCall(0).args[1].forEach((enc) => {
+                        expect(enc).to.be.a('number');
+                        expect(Number.isInteger(enc)).to.be.true;
+                    });
                     expect(RFB.messages.clientEncodings).to.have.been.calledBefore(RFB.messages.fbUpdateRequest);
                     expect(RFB.messages.fbUpdateRequest).to.have.been.calledOnce;
                     expect(RFB.messages.fbUpdateRequest).to.have.been.calledWith(client._sock, false, 0, 0, 27, 32);
@@ -1625,9 +1916,11 @@ describe('Remote Frame Buffer Protocol Client', function () {
                 });
             });
 
-            it('should transition to the "connected" state', function () {
+            it('should send the "connect" event', function () {
+                let spy = sinon.spy();
+                client.addEventListener('connect', spy);
                 sendServerInit({}, client);
-                expect(client._rfbConnectionState).to.equal('connected');
+                expect(spy).to.have.been.calledOnce;
             });
         });
     });
@@ -1643,28 +1936,6 @@ describe('Remote Frame Buffer Protocol Client', function () {
         });
 
         describe('Framebuffer Update Handling', function () {
-            const targetDataArr = [
-                0xff, 0x00, 0x00, 255, 0x00, 0xff, 0x00, 255, 0x00, 0x00, 0xff, 255, 0x00, 0x00, 0xff, 255,
-                0x00, 0xff, 0x00, 255, 0xff, 0x00, 0x00, 255, 0x00, 0x00, 0xff, 255, 0x00, 0x00, 0xff, 255,
-                0xee, 0x00, 0xff, 255, 0x00, 0xee, 0xff, 255, 0xaa, 0xee, 0xff, 255, 0xab, 0xee, 0xff, 255,
-                0xee, 0x00, 0xff, 255, 0x00, 0xee, 0xff, 255, 0xaa, 0xee, 0xff, 255, 0xab, 0xee, 0xff, 255
-            ];
-            let targetData;
-
-            const targetDataCheckArr = [
-                0x00, 0x00, 0xff, 255, 0x00, 0x00, 0xff, 255, 0x00, 0xff, 0x00, 255, 0x00, 0xff, 0x00, 255,
-                0x00, 0x00, 0xff, 255, 0x00, 0x00, 0xff, 255, 0x00, 0xff, 0x00, 255, 0x00, 0xff, 0x00, 255,
-                0x00, 0xff, 0x00, 255, 0x00, 0xff, 0x00, 255, 0x00, 0x00, 0xff, 255, 0x00, 0x00, 0xff, 255,
-                0x00, 0xff, 0x00, 255, 0x00, 0xff, 0x00, 255, 0x00, 0x00, 0xff, 255, 0x00, 0x00, 0xff, 255
-            ];
-            let targetDataCheck;
-
-            before(function () {
-                // NB(directxman12): PhantomJS 1.x doesn't implement Uint8ClampedArray
-                targetData = new Uint8Array(targetDataArr);
-                targetDataCheck = new Uint8Array(targetDataCheckArr);
-            });
-
             function sendFbuMsg(rectInfo, rectData, client, rectCnt) {
                 let data = [];
 
@@ -1733,22 +2004,6 @@ describe('Remote Frame Buffer Protocol Client', function () {
                 expect(client._fail).to.have.been.calledOnce;
             });
 
-            it('should be able to pause and resume receiving rects if not enought data', function () {
-                // seed some initial data to copy
-                client._fbWidth = 4;
-                client._fbHeight = 4;
-                client._display.resize(4, 4);
-                client._display.blitRgbxImage(0, 0, 4, 2, new Uint8Array(targetDataCheckArr.slice(0, 32)), 0);
-
-                const info = [{ x: 0, y: 2, width: 2, height: 2, encoding: 0x01},
-                              { x: 2, y: 2, width: 2, height: 2, encoding: 0x01}];
-                // data says [{ old_x: 2, old_y: 0 }, { old_x: 0, old_y: 0 }]
-                const rects = [[0, 2, 0, 0], [0, 0, 0, 0]];
-                sendFbuMsg([info[0]], [rects[0]], client, 2);
-                sendFbuMsg([info[1]], [rects[1]], client, -1);
-                expect(client._display).to.have.displayed(targetDataCheck);
-            });
-
             describe('Message Encoding Handlers', function () {
                 beforeEach(function () {
                     // a really small frame
@@ -1756,216 +2011,6 @@ describe('Remote Frame Buffer Protocol Client', function () {
                     client._fbHeight = 4;
                     client._fbDepth = 24;
                     client._display.resize(4, 4);
-                });
-
-                it('should handle the RAW encoding', function () {
-                    const info = [{ x: 0, y: 0, width: 2, height: 2, encoding: 0x00 },
-                                  { x: 2, y: 0, width: 2, height: 2, encoding: 0x00 },
-                                  { x: 0, y: 2, width: 4, height: 1, encoding: 0x00 },
-                                  { x: 0, y: 3, width: 4, height: 1, encoding: 0x00 }];
-                    // data is in bgrx
-                    const rects = [
-                        [0x00, 0x00, 0xff, 0, 0x00, 0xff, 0x00, 0, 0x00, 0xff, 0x00, 0, 0x00, 0x00, 0xff, 0],
-                        [0xff, 0x00, 0x00, 0, 0xff, 0x00, 0x00, 0, 0xff, 0x00, 0x00, 0, 0xff, 0x00, 0x00, 0],
-                        [0xff, 0x00, 0xee, 0, 0xff, 0xee, 0x00, 0, 0xff, 0xee, 0xaa, 0, 0xff, 0xee, 0xab, 0],
-                        [0xff, 0x00, 0xee, 0, 0xff, 0xee, 0x00, 0, 0xff, 0xee, 0xaa, 0, 0xff, 0xee, 0xab, 0]];
-                    sendFbuMsg(info, rects, client);
-                    expect(client._display).to.have.displayed(targetData);
-                });
-
-                it('should handle the RAW encoding in low colour mode', function () {
-                    const info = [{ x: 0, y: 0, width: 2, height: 2, encoding: 0x00 },
-                                  { x: 2, y: 0, width: 2, height: 2, encoding: 0x00 },
-                                  { x: 0, y: 2, width: 4, height: 1, encoding: 0x00 },
-                                  { x: 0, y: 3, width: 4, height: 1, encoding: 0x00 }];
-                    const rects = [
-                        [0x03, 0x03, 0x03, 0x03],
-                        [0x0c, 0x0c, 0x0c, 0x0c],
-                        [0x0c, 0x0c, 0x03, 0x03],
-                        [0x0c, 0x0c, 0x03, 0x03]];
-                    client._fbDepth = 8;
-                    sendFbuMsg(info, rects, client);
-                    expect(client._display).to.have.displayed(targetDataCheck);
-                });
-
-                it('should handle the COPYRECT encoding', function () {
-                    // seed some initial data to copy
-                    client._display.blitRgbxImage(0, 0, 4, 2, new Uint8Array(targetDataCheckArr.slice(0, 32)), 0);
-
-                    const info = [{ x: 0, y: 2, width: 2, height: 2, encoding: 0x01},
-                                  { x: 2, y: 2, width: 2, height: 2, encoding: 0x01}];
-                    // data says [{ old_x: 0, old_y: 0 }, { old_x: 0, old_y: 0 }]
-                    const rects = [[0, 2, 0, 0], [0, 0, 0, 0]];
-                    sendFbuMsg(info, rects, client);
-                    expect(client._display).to.have.displayed(targetDataCheck);
-                });
-
-                // TODO(directxman12): for encodings with subrects, test resuming on partial send?
-                // TODO(directxman12): test rre_chunk_sz (related to above about subrects)?
-
-                it('should handle the RRE encoding', function () {
-                    const info = [{ x: 0, y: 0, width: 4, height: 4, encoding: 0x02 }];
-                    const rect = [];
-                    push32(rect, 2); // 2 subrects
-                    push32(rect, 0xff00ff); // becomes 00ff00ff --> #00FF00 bg color
-                    rect.push(0xff); // becomes ff0000ff --> #0000FF color
-                    rect.push(0x00);
-                    rect.push(0x00);
-                    rect.push(0xff);
-                    push16(rect, 0); // x: 0
-                    push16(rect, 0); // y: 0
-                    push16(rect, 2); // width: 2
-                    push16(rect, 2); // height: 2
-                    rect.push(0xff); // becomes ff0000ff --> #0000FF color
-                    rect.push(0x00);
-                    rect.push(0x00);
-                    rect.push(0xff);
-                    push16(rect, 2); // x: 2
-                    push16(rect, 2); // y: 2
-                    push16(rect, 2); // width: 2
-                    push16(rect, 2); // height: 2
-                    sendFbuMsg(info, [rect], client);
-                    expect(client._display).to.have.displayed(targetDataCheck);
-                });
-
-                describe('the HEXTILE encoding handler', function () {
-                    it('should handle a tile with fg, bg specified, normal subrects', function () {
-                        const info = [{ x: 0, y: 0, width: 4, height: 4, encoding: 0x05 }];
-                        const rect = [];
-                        rect.push(0x02 | 0x04 | 0x08); // bg spec, fg spec, anysubrects
-                        push32(rect, 0xff00ff); // becomes 00ff00ff --> #00FF00 bg color
-                        rect.push(0xff); // becomes ff0000ff --> #0000FF fg color
-                        rect.push(0x00);
-                        rect.push(0x00);
-                        rect.push(0xff);
-                        rect.push(2); // 2 subrects
-                        rect.push(0); // x: 0, y: 0
-                        rect.push(1 | (1 << 4)); // width: 2, height: 2
-                        rect.push(2 | (2 << 4)); // x: 2, y: 2
-                        rect.push(1 | (1 << 4)); // width: 2, height: 2
-                        sendFbuMsg(info, [rect], client);
-                        expect(client._display).to.have.displayed(targetDataCheck);
-                    });
-
-                    it('should handle a raw tile', function () {
-                        const info = [{ x: 0, y: 0, width: 4, height: 4, encoding: 0x05 }];
-                        const rect = [];
-                        rect.push(0x01); // raw
-                        for (let i = 0; i < targetData.length; i += 4) {
-                            rect.push(targetData[i + 2]);
-                            rect.push(targetData[i + 1]);
-                            rect.push(targetData[i]);
-                            rect.push(targetData[i + 3]);
-                        }
-                        sendFbuMsg(info, [rect], client);
-                        expect(client._display).to.have.displayed(targetData);
-                    });
-
-                    it('should handle a tile with only bg specified (solid bg)', function () {
-                        const info = [{ x: 0, y: 0, width: 4, height: 4, encoding: 0x05 }];
-                        const rect = [];
-                        rect.push(0x02);
-                        push32(rect, 0xff00ff); // becomes 00ff00ff --> #00FF00 bg color
-                        sendFbuMsg(info, [rect], client);
-
-                        const expected = [];
-                        for (let i = 0; i < 16; i++) { push32(expected, 0xff00ff); }
-                        expect(client._display).to.have.displayed(new Uint8Array(expected));
-                    });
-
-                    it('should handle a tile with only bg specified and an empty frame afterwards', function () {
-                        // set the width so we can have two tiles
-                        client._fbWidth = 8;
-                        client._display.resize(8, 4);
-
-                        const info = [{ x: 0, y: 0, width: 32, height: 4, encoding: 0x05 }];
-
-                        const rect = [];
-
-                        // send a bg frame
-                        rect.push(0x02);
-                        push32(rect, 0xff00ff); // becomes 00ff00ff --> #00FF00 bg color
-
-                        // send an empty frame
-                        rect.push(0x00);
-
-                        sendFbuMsg(info, [rect], client);
-
-                        const expected = [];
-                        for (let i = 0; i < 16; i++) { push32(expected, 0xff00ff); }     // rect 1: solid
-                        for (let i = 0; i < 16; i++) { push32(expected, 0xff00ff); }    // rect 2: same bkground color
-                        expect(client._display).to.have.displayed(new Uint8Array(expected));
-                    });
-
-                    it('should handle a tile with bg and coloured subrects', function () {
-                        const info = [{ x: 0, y: 0, width: 4, height: 4, encoding: 0x05 }];
-                        const rect = [];
-                        rect.push(0x02 | 0x08 | 0x10); // bg spec, anysubrects, colouredsubrects
-                        push32(rect, 0xff00ff); // becomes 00ff00ff --> #00FF00 bg color
-                        rect.push(2); // 2 subrects
-                        rect.push(0xff); // becomes ff0000ff --> #0000FF fg color
-                        rect.push(0x00);
-                        rect.push(0x00);
-                        rect.push(0xff);
-                        rect.push(0); // x: 0, y: 0
-                        rect.push(1 | (1 << 4)); // width: 2, height: 2
-                        rect.push(0xff); // becomes ff0000ff --> #0000FF fg color
-                        rect.push(0x00);
-                        rect.push(0x00);
-                        rect.push(0xff);
-                        rect.push(2 | (2 << 4)); // x: 2, y: 2
-                        rect.push(1 | (1 << 4)); // width: 2, height: 2
-                        sendFbuMsg(info, [rect], client);
-                        expect(client._display).to.have.displayed(targetDataCheck);
-                    });
-
-                    it('should carry over fg and bg colors from the previous tile if not specified', function () {
-                        client._fbWidth = 4;
-                        client._fbHeight = 17;
-                        client._display.resize(4, 17);
-
-                        const info = [{ x: 0, y: 0, width: 4, height: 17, encoding: 0x05}];
-                        const rect = [];
-                        rect.push(0x02 | 0x04 | 0x08); // bg spec, fg spec, anysubrects
-                        push32(rect, 0xff00ff); // becomes 00ff00ff --> #00FF00 bg color
-                        rect.push(0xff); // becomes ff0000ff --> #0000FF fg color
-                        rect.push(0x00);
-                        rect.push(0x00);
-                        rect.push(0xff);
-                        rect.push(8); // 8 subrects
-                        for (let i = 0; i < 4; i++) {
-                            rect.push((0 << 4) | (i * 4)); // x: 0, y: i*4
-                            rect.push(1 | (1 << 4)); // width: 2, height: 2
-                            rect.push((2 << 4) | (i * 4 + 2)); // x: 2, y: i * 4 + 2
-                            rect.push(1 | (1 << 4)); // width: 2, height: 2
-                        }
-                        rect.push(0x08); // anysubrects
-                        rect.push(1); // 1 subrect
-                        rect.push(0); // x: 0, y: 0
-                        rect.push(1 | (1 << 4)); // width: 2, height: 2
-                        sendFbuMsg(info, [rect], client);
-
-                        let expected = [];
-                        for (let i = 0; i < 4; i++) { expected = expected.concat(targetDataCheckArr); }
-                        expected = expected.concat(targetDataCheckArr.slice(0, 16));
-                        expect(client._display).to.have.displayed(new Uint8Array(expected));
-                    });
-
-                    it('should fail on an invalid subencoding', function () {
-                        sinon.spy(client, "_fail");
-                        const info = [{ x: 0, y: 0, width: 4, height: 4, encoding: 0x05 }];
-                        const rects = [[45]];  // an invalid subencoding
-                        sendFbuMsg(info, rects, client);
-                        expect(client._fail).to.have.been.calledOnce;
-                    });
-                });
-
-                it.skip('should handle the TIGHT encoding', function () {
-                    // TODO(directxman12): test this
-                });
-
-                it.skip('should handle the TIGHT_PNG encoding', function () {
-                    // TODO(directxman12): test this
                 });
 
                 it('should handle the DesktopSize pseduo-encoding', function () {
@@ -2523,12 +2568,7 @@ describe('Remote Frame Buffer Protocol Client', function () {
                     });
 
                     it('should be able to handle large Provide messages', function () {
-                        // repeat() is not supported in IE so a loop is needed instead
-                        let expectedData = "hello";
-                        for (let i = 1; i <= 100000; i++) {
-                            expectedData += "hello";
-                        }
-
+                        let expectedData = "hello".repeat(100000);
                         let data = [3, 0, 0, 0];
                         const flags = [0x10, 0x00, 0x00, 0x01];
 
@@ -2727,154 +2767,412 @@ describe('Remote Frame Buffer Protocol Client', function () {
 
     describe('Asynchronous Events', function () {
         let client;
+        let pointerEvent;
+        let keyEvent;
+        let qemuKeyEvent;
+
         beforeEach(function () {
             client = makeRFB();
+            client._display.resize(100, 100);
+
+            // We need to disable this as focusing the canvas will
+            // cause the browser to scoll to it, messing up our
+            // client coordinate calculations
+            client.focusOnClick = false;
+
+            pointerEvent = sinon.spy(RFB.messages, 'pointerEvent');
+            keyEvent = sinon.spy(RFB.messages, 'keyEvent');
+            qemuKeyEvent = sinon.spy(RFB.messages, 'QEMUExtendedKeyEvent');
         });
 
-        describe('Mouse event handlers', function () {
-            beforeEach(function () {
-                this.clock = sinon.useFakeTimers(Date.now());
-                sinon.spy(RFB.messages, 'pointerEvent');
-            });
-            afterEach(function () {
-                this.clock.restore();
-                RFB.messages.pointerEvent.restore();
-            });
+        afterEach(function () {
+            pointerEvent.restore();
+            keyEvent.restore();
+            qemuKeyEvent.restore();
+        });
+
+        function elementToClient(x, y) {
+            let res = { x: 0, y: 0 };
+
+            let bounds = client._canvas.getBoundingClientRect();
+
+            /*
+             * If the canvas is on a fractional position we will calculate
+             * a fractional mouse position. But that gets truncated when we
+             * send the event, AND the same thing happens in RFB when it
+             * generates the PointerEvent message. To compensate for that
+             * fact we round the value upwards here.
+             */
+            res.x = Math.ceil(bounds.left + x);
+            res.y = Math.ceil(bounds.top + y);
+
+            return res;
+        }
+
+        describe('Mouse Events', function () {
+            function sendMouseMoveEvent(x, y) {
+                let pos = elementToClient(x, y);
+                let ev;
+
+                ev = new MouseEvent('mousemove',
+                                    { 'screenX': pos.x + window.screenX,
+                                      'screenY': pos.y + window.screenY,
+                                      'clientX': pos.x,
+                                      'clientY': pos.y });
+                client._canvas.dispatchEvent(ev);
+            }
+
+            function sendMouseButtonEvent(x, y, down, button) {
+                let pos = elementToClient(x, y);
+                let ev;
+
+                ev = new MouseEvent(down ? 'mousedown' : 'mouseup',
+                                    { 'screenX': pos.x + window.screenX,
+                                      'screenY': pos.y + window.screenY,
+                                      'clientX': pos.x,
+                                      'clientY': pos.y,
+                                      'button': button,
+                                      'buttons': 1 << button });
+                client._canvas.dispatchEvent(ev);
+            }
 
             it('should not send button messages in view-only mode', function () {
                 client._viewOnly = true;
-                client._handleMouseButton(0, 0, 1, 0x001);
-                expect(RFB.messages.pointerEvent).to.not.have.been.called;
+                sendMouseButtonEvent(10, 10, true, 0);
+                clock.tick(50);
+                expect(pointerEvent).to.not.have.been.called;
             });
 
             it('should not send movement messages in view-only mode', function () {
                 client._viewOnly = true;
-                client._handleMouseMove(0, 0);
-                expect(RFB.messages.pointerEvent).to.not.have.been.called;
+                sendMouseMoveEvent(10, 10);
+                clock.tick(50);
+                expect(pointerEvent).to.not.have.been.called;
             });
 
-            it('should send a pointer event on mouse button presses', function () {
-                client._handleMouseButton(10, 12, 1, 0x001);
-                expect(RFB.messages.pointerEvent).to.have.been.calledOnce;
+            it('should handle left mouse button', function () {
+                sendMouseButtonEvent(10, 10, true, 0);
+
+                expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                 10, 10, 0x1);
+                pointerEvent.resetHistory();
+
+                sendMouseButtonEvent(10, 10, false, 0);
+
+                expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                 10, 10, 0x0);
             });
 
-            it('should send a mask of 1 on mousedown', function () {
-                client._handleMouseButton(11, 13, 1, 0x001);
-                expect(RFB.messages.pointerEvent).to.have.been.calledWith(
-                    client._sock, 11, 13, 0x001);
+            it('should handle middle mouse button', function () {
+                sendMouseButtonEvent(10, 10, true, 1);
+
+                expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                 10, 10, 0x2);
+                pointerEvent.resetHistory();
+
+                sendMouseButtonEvent(10, 10, false, 1);
+
+                expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                 10, 10, 0x0);
             });
 
-            it('should send a mask of 0 on mouseup', function () {
-                client._mouseButtonMask = 0x001;
-                client._handleMouseButton(105, 120, 0, 0x001);
-                expect(RFB.messages.pointerEvent).to.have.been.calledWith(
-                    client._sock, 105, 120, 0x000);
+            it('should handle right mouse button', function () {
+                sendMouseButtonEvent(10, 10, true, 2);
+
+                expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                 10, 10, 0x4);
+                pointerEvent.resetHistory();
+
+                sendMouseButtonEvent(10, 10, false, 2);
+
+                expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                 10, 10, 0x0);
             });
 
-            it('should send a mask of 0 on mousemove', function () {
-                client._handleMouseMove(100, 200);
-                expect(RFB.messages.pointerEvent).to.have.been.calledWith(
-                    client._sock, 100, 200, 0x000);
+            it('should handle multiple mouse buttons', function () {
+                sendMouseButtonEvent(10, 10, true, 0);
+                sendMouseButtonEvent(10, 10, true, 2);
+
+                expect(pointerEvent).to.have.been.calledTwice;
+                expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       10, 10, 0x1);
+                expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        10, 10, 0x5);
+
+                pointerEvent.resetHistory();
+
+                sendMouseButtonEvent(10, 10, false, 0);
+                sendMouseButtonEvent(10, 10, false, 2);
+
+                expect(pointerEvent).to.have.been.calledTwice;
+                expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       10, 10, 0x4);
+                expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        10, 10, 0x0);
             });
 
-            it('should set the button mask so that future mouse movements use it', function () {
-                client._handleMouseButton(10, 12, 1, 0x010);
-                client._handleMouseMove(13, 9);
-                expect(RFB.messages.pointerEvent).to.have.been.calledTwice;
-                expect(RFB.messages.pointerEvent).to.have.been.calledWith(
-                    client._sock, 13, 9, 0x010);
+            it('should handle mouse movement', function () {
+                sendMouseMoveEvent(50, 70);
+                expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                 50, 70, 0x0);
             });
 
-            it('should send a single pointer event on mouse movement', function () {
-                client._handleMouseMove(100, 200);
-                this.clock.tick(100);
-                expect(RFB.messages.pointerEvent).to.have.been.calledOnce;
+            it('should handle click and drag', function () {
+                sendMouseButtonEvent(10, 10, true, 0);
+                sendMouseMoveEvent(50, 70);
+
+                expect(pointerEvent).to.have.been.calledTwice;
+                expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       10, 10, 0x1);
+                expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        50, 70, 0x1);
+
+                pointerEvent.resetHistory();
+
+                sendMouseButtonEvent(50, 70, false, 0);
+
+                expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                 50, 70, 0x0);
             });
 
-            it('should delay one move if two events are too close', function () {
-                client._handleMouseMove(18, 30);
-                client._handleMouseMove(20, 50);
-                expect(RFB.messages.pointerEvent).to.have.been.calledOnce;
-                this.clock.tick(100);
-                expect(RFB.messages.pointerEvent).to.have.been.calledTwice;
+            describe('Event Aggregation', function () {
+                it('should send a single pointer event on mouse movement', function () {
+                    sendMouseMoveEvent(50, 70);
+                    clock.tick(100);
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     50, 70, 0x0);
+                });
+
+                it('should delay one move if two events are too close', function () {
+                    sendMouseMoveEvent(18, 30);
+                    sendMouseMoveEvent(20, 50);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     18, 30, 0x0);
+                    pointerEvent.resetHistory();
+
+                    clock.tick(100);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     20, 50, 0x0);
+                });
+
+                it('should only send first and last move of many close events', function () {
+                    sendMouseMoveEvent(18, 30);
+                    sendMouseMoveEvent(20, 50);
+                    sendMouseMoveEvent(21, 55);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     18, 30, 0x0);
+                    pointerEvent.resetHistory();
+
+                    clock.tick(100);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     21, 55, 0x0);
+                });
+
+                // We selected the 17ms since that is ~60 FPS
+                it('should send move events every 17 ms', function () {
+                    sendMouseMoveEvent(1, 10);  // instant send
+                    clock.tick(10);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     1, 10, 0x0);
+                    pointerEvent.resetHistory();
+
+                    sendMouseMoveEvent(2, 20);  // delayed
+                    clock.tick(10);        // timeout send
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     2, 20, 0x0);
+                    pointerEvent.resetHistory();
+
+                    sendMouseMoveEvent(3, 30);  // delayed
+                    clock.tick(10);
+                    sendMouseMoveEvent(4, 40);  // delayed
+                    clock.tick(10);        // timeout send
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     4, 40, 0x0);
+                    pointerEvent.resetHistory();
+
+                    sendMouseMoveEvent(5, 50);  // delayed
+
+                    expect(pointerEvent).to.not.have.been.called;
+                });
+
+                it('should send waiting move events before a button press', function () {
+                    sendMouseMoveEvent(13, 9);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     13, 9, 0x0);
+                    pointerEvent.resetHistory();
+
+                    sendMouseMoveEvent(20, 70);
+
+                    expect(pointerEvent).to.not.have.been.called;
+
+                    sendMouseButtonEvent(20, 70, true, 0);
+
+                    expect(pointerEvent).to.have.been.calledTwice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 70, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 70, 0x1);
+                });
+
+                it('should send move events with enough time apart normally', function () {
+                    sendMouseMoveEvent(58, 60);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     58, 60, 0x0);
+                    pointerEvent.resetHistory();
+
+                    clock.tick(20);
+
+                    sendMouseMoveEvent(25, 60);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     25, 60, 0x0);
+                    pointerEvent.resetHistory();
+                });
+
+                it('should not send waiting move events if disconnected', function () {
+                    sendMouseMoveEvent(88, 99);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     88, 99, 0x0);
+                    pointerEvent.resetHistory();
+
+                    sendMouseMoveEvent(66, 77);
+                    client.disconnect();
+                    clock.tick(20);
+
+                    expect(pointerEvent).to.not.have.been.called;
+                });
             });
 
-            it('should only send first and last move of many close events', function () {
-                client._handleMouseMove(18, 40);
-                client._handleMouseMove(20, 50);
-                client._handleMouseMove(21, 55);
-
-                expect(RFB.messages.pointerEvent).to.have.been.calledOnce;
-                this.clock.tick(60);
-
-                expect(RFB.messages.pointerEvent).to.have.been.calledTwice;
-                expect(RFB.messages.pointerEvent.firstCall).to.have.been.calledWith(
-                    client._sock, 18, 40, 0x000);
-                expect(RFB.messages.pointerEvent.secondCall).to.have.been.calledWith(
-                    client._sock, 21, 55, 0x000);
+            it.skip('should block click events', function () {
+                /* FIXME */
             });
 
-            // We selected the 17ms since that is ~60 FPS
-            it('should send move events every 17 ms', function () {
-                client._handleMouseMove(1, 10); // instant send
-                this.clock.tick(10);
-                client._handleMouseMove(2, 20); // delayed
-                this.clock.tick(10);            // timeout send
-                client._handleMouseMove(3, 30); // delayed
-                this.clock.tick(10);
-                client._handleMouseMove(4, 40); // delayed
-                this.clock.tick(10);            // timeout send
-                client._handleMouseMove(5, 50); // delayed
-
-                expect(RFB.messages.pointerEvent).to.have.callCount(3);
-                expect(RFB.messages.pointerEvent.firstCall).to.have.been.calledWith(
-                    client._sock, 1, 10, 0x000);
-                expect(RFB.messages.pointerEvent.secondCall).to.have.been.calledWith(
-                    client._sock, 2, 20, 0x000);
-                expect(RFB.messages.pointerEvent.thirdCall).to.have.been.calledWith(
-                    client._sock, 4, 40, 0x000);
-            });
-
-            it('should send waiting move events before a button press', function () {
-                client._handleMouseMove(13, 9);
-                client._handleMouseMove(20, 70);
-                client._handleMouseButton(10, 12, 1, 0x100);
-                expect(RFB.messages.pointerEvent).to.have.been.calledThrice;
-                expect(RFB.messages.pointerEvent.firstCall).to.have.been.calledWith(
-                    client._sock, 13, 9, 0x000);
-                expect(RFB.messages.pointerEvent.secondCall).to.have.been.calledWith(
-                    client._sock, 10, 12, 0x000);
-                expect(RFB.messages.pointerEvent.thirdCall).to.have.been.calledWith(
-                    client._sock, 10, 12, 0x100);
-            });
-
-            it('should not delay events when button mask changes', function () {
-                client._handleMouseMove(13, 9); // instant
-                client._handleMouseMove(11, 10); // delayed
-                client._handleMouseButton(10, 12, 1, 0x010); // flush delayed
-                expect(RFB.messages.pointerEvent).to.have.been.calledThrice;
-            });
-
-            it('should send move events with enough time apart normally', function () {
-                client._handleMouseMove(58, 60);
-                expect(RFB.messages.pointerEvent).to.have.been.calledOnce;
-
-                this.clock.tick(20);
-
-                client._handleMouseMove(25, 60);
-                expect(RFB.messages.pointerEvent).to.have.been.calledTwice;
-            });
-
-            it('should not send waiting move events if disconnected', function () {
-                client._handleMouseMove(88, 99);
-                client._handleMouseMove(66, 77);
-                client.disconnect();
-                this.clock.tick(20);
-                expect(RFB.messages.pointerEvent).to.have.been.calledOnce;
+            it.skip('should block contextmenu events', function () {
+                /* FIXME */
             });
         });
 
-        describe('Keyboard Event Handlers', function () {
+        describe('Wheel Events', function () {
+            function sendWheelEvent(x, y, dx, dy, mode=0) {
+                let pos = elementToClient(x, y);
+                let ev;
+
+                ev = new WheelEvent('wheel',
+                                    { 'screenX': pos.x + window.screenX,
+                                      'screenY': pos.y + window.screenY,
+                                      'clientX': pos.x,
+                                      'clientY': pos.y,
+                                      'deltaX': dx,
+                                      'deltaY': dy,
+                                      'deltaMode': mode });
+                client._canvas.dispatchEvent(ev);
+            }
+
+            it('should handle wheel up event', function () {
+                sendWheelEvent(10, 10, 0, -50);
+
+                expect(pointerEvent).to.have.been.calledTwice;
+                expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       10, 10, 1<<3);
+                expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        10, 10, 0);
+            });
+
+            it('should handle wheel down event', function () {
+                sendWheelEvent(10, 10, 0, 50);
+
+                expect(pointerEvent).to.have.been.calledTwice;
+                expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       10, 10, 1<<4);
+                expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        10, 10, 0);
+            });
+
+            it('should handle wheel left event', function () {
+                sendWheelEvent(10, 10, -50, 0);
+
+                expect(pointerEvent).to.have.been.calledTwice;
+                expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       10, 10, 1<<5);
+                expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        10, 10, 0);
+            });
+
+            it('should handle wheel right event', function () {
+                sendWheelEvent(10, 10, 50, 0);
+
+                expect(pointerEvent).to.have.been.calledTwice;
+                expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       10, 10, 1<<6);
+                expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        10, 10, 0);
+            });
+
+            it('should ignore wheel when in view only', function () {
+                client._viewOnly = true;
+
+                sendWheelEvent(10, 10, 50, 0);
+
+                expect(pointerEvent).to.not.have.been.called;
+            });
+
+            it('should accumulate wheel events if small enough', function () {
+                sendWheelEvent(10, 10, 0, 20);
+                sendWheelEvent(10, 10, 0, 20);
+
+                expect(pointerEvent).to.not.have.been.called;
+
+                sendWheelEvent(10, 10, 0, 20);
+
+                expect(pointerEvent).to.have.been.calledTwice;
+                expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       10, 10, 1<<4);
+                expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        10, 10, 0);
+            });
+
+            it('should not accumulate large wheel events', function () {
+                sendWheelEvent(10, 10, 0, 400);
+
+                expect(pointerEvent).to.have.been.calledTwice;
+                expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       10, 10, 1<<4);
+                expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        10, 10, 0);
+            });
+
+            it('should handle line based wheel event', function () {
+                sendWheelEvent(10, 10, 0, 3, 1);
+
+                expect(pointerEvent).to.have.been.calledTwice;
+                expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       10, 10, 1<<4);
+                expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        10, 10, 0);
+            });
+
+            it('should handle page based wheel event', function () {
+                sendWheelEvent(10, 10, 0, 3, 2);
+
+                expect(pointerEvent).to.have.been.calledTwice;
+                expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       10, 10, 1<<4);
+                expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        10, 10, 0);
+            });
+        });
+
+        describe('Keyboard Events', function () {
             it('should send a key message on a key press', function () {
                 client._handleKeyEvent(0x41, 'KeyA', true);
                 const keyMsg = {_sQ: new Uint8Array(8), _sQlen: 0, flush: () => {}};
@@ -2890,7 +3188,698 @@ describe('Remote Frame Buffer Protocol Client', function () {
             });
         });
 
-        describe('WebSocket event handlers', function () {
+        describe('Gesture event handlers', function () {
+            function gestureStart(gestureType, x, y,
+                                  magnitudeX = 0, magnitudeY = 0) {
+                let pos = elementToClient(x, y);
+                let detail = {type: gestureType, clientX: pos.x, clientY: pos.y};
+
+                detail.magnitudeX = magnitudeX;
+                detail.magnitudeY = magnitudeY;
+
+                let ev = new CustomEvent('gesturestart', { detail: detail });
+                client._canvas.dispatchEvent(ev);
+            }
+
+            function gestureMove(gestureType, x, y,
+                                 magnitudeX = 0, magnitudeY = 0) {
+                let pos = elementToClient(x, y);
+                let detail = {type: gestureType, clientX: pos.x, clientY: pos.y};
+
+                detail.magnitudeX = magnitudeX;
+                detail.magnitudeY = magnitudeY;
+
+                let ev = new CustomEvent('gesturemove', { detail: detail });
+                client._canvas.dispatchEvent(ev);
+            }
+
+            function gestureEnd(gestureType, x, y) {
+                let pos = elementToClient(x, y);
+                let detail = {type: gestureType, clientX: pos.x, clientY: pos.y};
+                let ev = new CustomEvent('gestureend', { detail: detail });
+                client._canvas.dispatchEvent(ev);
+            }
+
+            describe('Gesture onetap', function () {
+                it('should handle onetap events', function () {
+                    let bmask = 0x1;
+
+                    gestureStart('onetap', 20, 40);
+                    gestureEnd('onetap', 20, 40);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                });
+
+                it('should keep same position for multiple onetap events', function () {
+                    let bmask = 0x1;
+
+                    gestureStart('onetap', 20, 40);
+                    gestureEnd('onetap', 20, 40);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+
+                    pointerEvent.resetHistory();
+
+                    gestureStart('onetap', 20, 50);
+                    gestureEnd('onetap', 20, 50);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+
+                    pointerEvent.resetHistory();
+
+                    gestureStart('onetap', 30, 50);
+                    gestureEnd('onetap', 30, 50);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                });
+
+                it('should not keep same position for onetap events when too far apart', function () {
+                    let bmask = 0x1;
+
+                    gestureStart('onetap', 20, 40);
+                    gestureEnd('onetap', 20, 40);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+
+                    pointerEvent.resetHistory();
+
+                    gestureStart('onetap', 80, 95);
+                    gestureEnd('onetap', 80, 95);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           80, 95, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            80, 95, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           80, 95, 0x0);
+                });
+
+                it('should not keep same position for onetap events when enough time inbetween', function () {
+                    let bmask = 0x1;
+
+                    gestureStart('onetap', 10, 20);
+                    gestureEnd('onetap', 10, 20);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           10, 20, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            10, 20, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           10, 20, 0x0);
+
+                    pointerEvent.resetHistory();
+                    this.clock.tick(1500);
+
+                    gestureStart('onetap', 15, 20);
+                    gestureEnd('onetap', 15, 20);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           15, 20, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            15, 20, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           15, 20, 0x0);
+
+                    pointerEvent.resetHistory();
+                });
+            });
+
+            describe('Gesture twotap', function () {
+                it('should handle gesture twotap events', function () {
+                    let bmask = 0x4;
+
+                    gestureStart("twotap", 20, 40);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                });
+
+                it('should keep same position for multiple twotap events', function () {
+                    let bmask = 0x4;
+
+                    for (let offset = 0;offset < 30;offset += 10) {
+                        pointerEvent.resetHistory();
+
+                        gestureStart('twotap', 20, 40 + offset);
+                        gestureEnd('twotap', 20, 40 + offset);
+
+                        expect(pointerEvent).to.have.been.calledThrice;
+                        expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                               20, 40, 0x0);
+                        expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                                20, 40, bmask);
+                        expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                               20, 40, 0x0);
+                    }
+                });
+            });
+
+            describe('Gesture threetap', function () {
+                it('should handle gesture start for threetap events', function () {
+                    let bmask = 0x2;
+
+                    gestureStart("threetap", 20, 40);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                });
+
+                it('should keep same position for multiple threetap events', function () {
+                    let bmask = 0x2;
+
+                    for (let offset = 0;offset < 30;offset += 10) {
+                        pointerEvent.resetHistory();
+
+                        gestureStart('threetap', 20, 40 + offset);
+                        gestureEnd('threetap', 20, 40 + offset);
+
+                        expect(pointerEvent).to.have.been.calledThrice;
+                        expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                               20, 40, 0x0);
+                        expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                                20, 40, bmask);
+                        expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                               20, 40, 0x0);
+                    }
+                });
+            });
+
+            describe('Gesture drag', function () {
+                it('should handle gesture drag events', function () {
+                    let bmask = 0x1;
+
+                    gestureStart('drag', 20, 40);
+
+                    expect(pointerEvent).to.have.been.calledTwice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('drag', 30, 50);
+                    clock.tick(50);
+
+                    expect(pointerEvent).to.have.been.calledOnce;
+                    expect(pointerEvent).to.have.been.calledWith(client._sock,
+                                                                 30, 50, bmask);
+
+                    pointerEvent.resetHistory();
+
+                    gestureEnd('drag', 30, 50);
+
+                    expect(pointerEvent).to.have.been.calledTwice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           30, 50, bmask);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            30, 50, 0x0);
+                });
+            });
+
+            describe('Gesture long press', function () {
+                it('should handle long press events', function () {
+                    let bmask = 0x4;
+
+                    gestureStart('longpress', 20, 40);
+
+                    expect(pointerEvent).to.have.been.calledTwice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    pointerEvent.resetHistory();
+
+                    gestureMove('longpress', 40, 60);
+                    clock.tick(50);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     40, 60, bmask);
+
+                    pointerEvent.resetHistory();
+
+                    gestureEnd('longpress', 40, 60);
+
+                    expect(pointerEvent).to.have.been.calledTwice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           40, 60, bmask);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            40, 60, 0x0);
+                });
+            });
+
+            describe('Gesture twodrag', function () {
+                it('should handle gesture twodrag up events', function () {
+                    let bmask = 0x10; // Button mask for scroll down
+
+                    gestureStart('twodrag', 20, 40, 0, 0);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     20, 40, 0x0);
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('twodrag', 20, 40, 0, -60);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                });
+
+                it('should handle gesture twodrag down events', function () {
+                    let bmask = 0x8; // Button mask for scroll up
+
+                    gestureStart('twodrag', 20, 40, 0, 0);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     20, 40, 0x0);
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('twodrag', 20, 40, 0, 60);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                });
+
+                it('should handle gesture twodrag right events', function () {
+                    let bmask = 0x20; // Button mask for scroll right
+
+                    gestureStart('twodrag', 20, 40, 0, 0);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     20, 40, 0x0);
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('twodrag', 20, 40, 60, 0);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                });
+
+                it('should handle gesture twodrag left events', function () {
+                    let bmask = 0x40; // Button mask for scroll left
+
+                    gestureStart('twodrag', 20, 40, 0, 0);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     20, 40, 0x0);
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('twodrag', 20, 40, -60, 0);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                });
+
+                it('should handle gesture twodrag diag events', function () {
+                    let scrlUp = 0x8; // Button mask for scroll up
+                    let scrlRight = 0x20; // Button mask for scroll right
+
+                    gestureStart('twodrag', 20, 40, 0, 0);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     20, 40, 0x0);
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('twodrag', 20, 40, 60, 60);
+
+                    expect(pointerEvent).to.have.been.callCount(5);
+                    expect(pointerEvent.getCall(0)).to.have.been.calledWith(client._sock,
+                                                                            20, 40, 0x0);
+                    expect(pointerEvent.getCall(1)).to.have.been.calledWith(client._sock,
+                                                                            20, 40, scrlUp);
+                    expect(pointerEvent.getCall(2)).to.have.been.calledWith(client._sock,
+                                                                            20, 40, 0x0);
+                    expect(pointerEvent.getCall(3)).to.have.been.calledWith(client._sock,
+                                                                            20, 40, scrlRight);
+                    expect(pointerEvent.getCall(4)).to.have.been.calledWith(client._sock,
+                                                                            20, 40, 0x0);
+                });
+
+                it('should handle multiple small gesture twodrag events', function () {
+                    let bmask = 0x8; // Button mask for scroll up
+
+                    gestureStart('twodrag', 20, 40, 0, 0);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     20, 40, 0x0);
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('twodrag', 20, 40, 0, 10);
+                    clock.tick(50);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     20, 40, 0x0);
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('twodrag', 20, 40, 0, 20);
+                    clock.tick(50);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     20, 40, 0x0);
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('twodrag', 20, 40, 0, 60);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                });
+
+                it('should handle large gesture twodrag events', function () {
+                    let bmask = 0x8; // Button mask for scroll up
+
+                    gestureStart('twodrag', 30, 50, 0, 0);
+
+                    expect(pointerEvent).
+                        to.have.been.calledOnceWith(client._sock, 30, 50, 0x0);
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('twodrag', 30, 50, 0, 200);
+
+                    expect(pointerEvent).to.have.callCount(7);
+                    expect(pointerEvent.getCall(0)).to.have.been.calledWith(client._sock,
+                                                                            30, 50, 0x0);
+                    expect(pointerEvent.getCall(1)).to.have.been.calledWith(client._sock,
+                                                                            30, 50, bmask);
+                    expect(pointerEvent.getCall(2)).to.have.been.calledWith(client._sock,
+                                                                            30, 50, 0x0);
+                    expect(pointerEvent.getCall(3)).to.have.been.calledWith(client._sock,
+                                                                            30, 50, bmask);
+                    expect(pointerEvent.getCall(4)).to.have.been.calledWith(client._sock,
+                                                                            30, 50, 0x0);
+                    expect(pointerEvent.getCall(5)).to.have.been.calledWith(client._sock,
+                                                                            30, 50, bmask);
+                    expect(pointerEvent.getCall(6)).to.have.been.calledWith(client._sock,
+                                                                            30, 50, 0x0);
+                });
+            });
+
+            describe('Gesture pinch', function () {
+                it('should handle gesture pinch in events', function () {
+                    let keysym = KeyTable.XK_Control_L;
+                    let bmask = 0x10; // Button mask for scroll down
+
+                    gestureStart('pinch', 20, 40, 90, 90);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     20, 40, 0x0);
+                    expect(keyEvent).to.not.have.been.called;
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('pinch', 20, 40, 30, 30);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+
+                    expect(keyEvent).to.have.been.calledTwice;
+                    expect(keyEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       keysym, 1);
+                    expect(keyEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        keysym, 0);
+
+                    expect(keyEvent.firstCall).to.have.been.calledBefore(pointerEvent.secondCall);
+                    expect(keyEvent.lastCall).to.have.been.calledAfter(pointerEvent.lastCall);
+
+                    pointerEvent.resetHistory();
+                    keyEvent.resetHistory();
+
+                    gestureEnd('pinch', 20, 40);
+
+                    expect(pointerEvent).to.not.have.been.called;
+                    expect(keyEvent).to.not.have.been.called;
+                });
+
+                it('should handle gesture pinch out events', function () {
+                    let keysym = KeyTable.XK_Control_L;
+                    let bmask = 0x8; // Button mask for scroll up
+
+                    gestureStart('pinch', 10, 20, 10, 20);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     10, 20, 0x0);
+                    expect(keyEvent).to.not.have.been.called;
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('pinch', 10, 20, 70, 80);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           10, 20, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            10, 20, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           10, 20, 0x0);
+
+                    expect(keyEvent).to.have.been.calledTwice;
+                    expect(keyEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       keysym, 1);
+                    expect(keyEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        keysym, 0);
+
+                    expect(keyEvent.firstCall).to.have.been.calledBefore(pointerEvent.secondCall);
+                    expect(keyEvent.lastCall).to.have.been.calledAfter(pointerEvent.lastCall);
+
+                    pointerEvent.resetHistory();
+                    keyEvent.resetHistory();
+
+                    gestureEnd('pinch', 10, 20);
+
+                    expect(pointerEvent).to.not.have.been.called;
+                    expect(keyEvent).to.not.have.been.called;
+                });
+
+                it('should handle large gesture pinch', function () {
+                    let keysym = KeyTable.XK_Control_L;
+                    let bmask = 0x10; // Button mask for scroll down
+
+                    gestureStart('pinch', 20, 40, 150, 150);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     20, 40, 0x0);
+                    expect(keyEvent).to.not.have.been.called;
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('pinch', 20, 40, 30, 30);
+
+                    expect(pointerEvent).to.have.been.callCount(5);
+                    expect(pointerEvent.getCall(0)).to.have.been.calledWith(client._sock,
+                                                                            20, 40, 0x0);
+                    expect(pointerEvent.getCall(1)).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.getCall(2)).to.have.been.calledWith(client._sock,
+                                                                            20, 40, 0x0);
+                    expect(pointerEvent.getCall(3)).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.getCall(4)).to.have.been.calledWith(client._sock,
+                                                                            20, 40, 0x0);
+
+                    expect(keyEvent).to.have.been.calledTwice;
+                    expect(keyEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       keysym, 1);
+                    expect(keyEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        keysym, 0);
+
+                    expect(keyEvent.firstCall).to.have.been.calledBefore(pointerEvent.secondCall);
+                    expect(keyEvent.lastCall).to.have.been.calledAfter(pointerEvent.lastCall);
+
+                    pointerEvent.resetHistory();
+                    keyEvent.resetHistory();
+
+                    gestureEnd('pinch', 20, 40);
+
+                    expect(pointerEvent).to.not.have.been.called;
+                    expect(keyEvent).to.not.have.been.called;
+                });
+
+                it('should handle multiple small gesture pinch out events', function () {
+                    let keysym = KeyTable.XK_Control_L;
+                    let bmask = 0x8; // Button mask for scroll down
+
+                    gestureStart('pinch', 20, 40, 0, 10);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     20, 40, 0x0);
+                    expect(keyEvent).to.not.have.been.called;
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('pinch', 20, 40, 0, 30);
+                    clock.tick(50);
+
+                    expect(pointerEvent).to.have.been.calledWith(client._sock,
+                                                                 20, 40, 0x0);
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('pinch', 20, 40, 0, 60);
+                    clock.tick(50);
+
+                    expect(pointerEvent).to.have.been.calledWith(client._sock,
+                                                                 20, 40, 0x0);
+
+                    pointerEvent.resetHistory();
+                    keyEvent.resetHistory();
+
+                    gestureMove('pinch', 20, 40, 0, 90);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+
+                    expect(keyEvent).to.have.been.calledTwice;
+                    expect(keyEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                       keysym, 1);
+                    expect(keyEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                        keysym, 0);
+
+                    expect(keyEvent.firstCall).to.have.been.calledBefore(pointerEvent.secondCall);
+                    expect(keyEvent.lastCall).to.have.been.calledAfter(pointerEvent.lastCall);
+
+                    pointerEvent.resetHistory();
+                    keyEvent.resetHistory();
+
+                    gestureEnd('pinch', 20, 40);
+
+                    expect(keyEvent).to.not.have.been.called;
+                });
+
+                it('should send correct key control code', function () {
+                    let keysym = KeyTable.XK_Control_L;
+                    let code = 0x1d;
+                    let bmask = 0x10; // Button mask for scroll down
+
+                    client._qemuExtKeyEventSupported = true;
+
+                    gestureStart('pinch', 20, 40, 90, 90);
+
+                    expect(pointerEvent).to.have.been.calledOnceWith(client._sock,
+                                                                     20, 40, 0x0);
+                    expect(qemuKeyEvent).to.not.have.been.called;
+
+                    pointerEvent.resetHistory();
+
+                    gestureMove('pinch', 20, 40, 30, 30);
+
+                    expect(pointerEvent).to.have.been.calledThrice;
+                    expect(pointerEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+                    expect(pointerEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            20, 40, bmask);
+                    expect(pointerEvent.thirdCall).to.have.been.calledWith(client._sock,
+                                                                           20, 40, 0x0);
+
+                    expect(qemuKeyEvent).to.have.been.calledTwice;
+                    expect(qemuKeyEvent.firstCall).to.have.been.calledWith(client._sock,
+                                                                           keysym,
+                                                                           true,
+                                                                           code);
+                    expect(qemuKeyEvent.secondCall).to.have.been.calledWith(client._sock,
+                                                                            keysym,
+                                                                            false,
+                                                                            code);
+
+                    expect(qemuKeyEvent.firstCall).to.have.been.calledBefore(pointerEvent.secondCall);
+                    expect(qemuKeyEvent.lastCall).to.have.been.calledAfter(pointerEvent.lastCall);
+
+                    pointerEvent.resetHistory();
+                    qemuKeyEvent.resetHistory();
+
+                    gestureEnd('pinch', 20, 40);
+
+                    expect(pointerEvent).to.not.have.been.called;
+                    expect(qemuKeyEvent).to.not.have.been.called;
+                });
+            });
+        });
+
+        describe('WebSocket Events', function () {
             // message events
             it('should do nothing if we receive an empty message and have nothing in the queue', function () {
                 client._normalMsg = sinon.spy();
