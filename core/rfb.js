@@ -51,7 +51,7 @@ const WHEEL_LINE_HEIGHT = 19; // Assumed pixels for one line step
 // Gesture thresholds
 const GESTURE_ZOOMSENS = 75;
 const GESTURE_SCRLSENS = 50;
-const DOUBLE_TAP_TIMEOUT = 1000;
+const DOUBLE_TAP_TIMEOUT = 200;
 const DOUBLE_TAP_THRESHOLD = 50;
 
 // Security types
@@ -1217,7 +1217,9 @@ export default class RFB extends EventTargetMixin {
 
         this._fakeMouseMove(this._gestureFirstDoubleTapEv, pos.x, pos.y);
         this._handleMouseButton(pos.x, pos.y, true, bmask);
-        this._handleMouseButton(pos.x, pos.y, false, bmask);
+        this._mouseMoveTimer = setTimeout(() => {
+            this._handleMouseButton(pos.x, pos.y, false, bmask);
+        }, MOUSE_MOVE_DELAY);
     }
 
     _handleGesture(ev) {
