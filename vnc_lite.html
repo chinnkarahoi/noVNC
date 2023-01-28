@@ -39,6 +39,15 @@
         #status {
             text-align: center;
         }
+        #toggleAudioButton {
+            position: fixed;
+            top: 0px;
+            left: 0px;
+            border: 1px outset;
+            padding: 5px 5px 4px 5px;
+            cursor: pointer;
+            display: none;
+        }
         #sendCtrlAltDelButton {
             position: fixed;
             top: 0px;
@@ -58,18 +67,38 @@
     <script type="module" crossorigin="anonymous">
         // RFB holds the API to connect and communicate with a VNC server
         import RFB from './core/rfb.js';
+        import WebAudio from './core/webaudio.js';
 
         let rfb;
         let desktopName;
+        let wa;
 
         // When this function is called we have
         // successfully connected to a server
         function connectedToServer(e) {
+            let audio_url;
+            // let host = window.location.hostname; 
+            // let port = '32038';
+            if (window.location.protocol === "https:") {
+                audio_url = 'wss';
+            } else {
+                audio_url = 'ws';
+            }
+            audio_url += '://' + window.location.host + '/audiowebsock';
+
+            wa = new WebAudio(audio_url);
+            document.getElementById('toggleAudioButton').style.display = "block";
+
             status("Connected to " + desktopName);
         }
 
         // This function is called when we are disconnected
         function disconnectedFromServer(e) {
+            if(wa !== null) {
+                wa.stop();
+                wa = null;
+                document.getElementById('toggleAudioButton').style.display = "none";
+            }
             if (e.detail.clean) {
                 status("Disconnected");
             } else {
@@ -96,6 +125,19 @@
         function sendCtrlAltDel() {
             rfb.sendCtrlAltDel();
             return false;
+        }
+
+        // Enable the audio websocket
+        function toggleAudio() {
+            if (wa.connected) {
+                console.log('Stopping audio...')
+                wa.stop();
+                document.getElementById('toggleAudioButton').innerText = "Enable Audio";
+            } else {
+                console.log('Starting audio websocket on: ' + audio_url)
+                wa.start();
+                document.getElementById('toggleAudioButton').innerText = "Disable Audio";
+            }
         }
 
         // Show a status text in the top bar
@@ -133,12 +175,16 @@
         document.getElementById('sendCtrlAltDelButton')
             .onclick = sendCtrlAltDel;
 
+        document.getElementById('toggleAudioButton')
+            .onclick = toggleAudio;
+
         // Read parameters specified in the URL query string
         // By default, use the host and port of server that served this file
         const host = readQueryVariable('host', window.location.hostname);
         let port = readQueryVariable('port', window.location.port);
         const password = readQueryVariable('password');
         const path = readQueryVariable('path', 'websockify');
+        const audio_path = readQueryVariable('audio_path', '');
 
         // | | |         | | |
         // | | | Connect | | |
@@ -148,6 +194,7 @@
 
         // Build the websocket URL used to connect
         let url;
+        let audio_url;
         if (window.location.protocol === "https:") {
             url = 'wss';
         } else {
@@ -156,6 +203,9 @@
         url += '://' + host;
         if(port) {
             url += ':' + port;
+        }
+        if(audio_path !== '') {
+            audio_url = url + '/' + audio_path;
         }
         url += '/' + path;
 
@@ -177,6 +227,7 @@
 
 <body>
     <div id="top_bar">
+        <div id="toggleAudioButton">Enable Audio</div>
         <div id="status">Loading</div>
         <div id="sendCtrlAltDelButton">Send CtrlAltDel</div>
     </div>

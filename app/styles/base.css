@@ -615,7 +615,7 @@ html {
 #noVNC_setting_port {
   width: 80px;
 }
-#noVNC_setting_path {
+#noVNC_setting_path #noVNC_setting_apath {
   width: 100px;
 }
 

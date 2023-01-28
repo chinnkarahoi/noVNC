@@ -1,0 +1,22 @@
+include:
+  - project: 'root/cluster-app-mono'
+    ref: master
+    file: '.gitlab-ci.template.yml'
+build:nas:novnc:
+  extends: .docker_build_script
+  variables:
+    IMAGE_NAME: novnc
+    BUILD_CONTEXT: .
+  stage: build
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_COMMIT_TAG =~ /^v?\d+\.\d+\.\d+$/
+    - when: manual
+  allow_failure: false
+deploy:nas:novnc:
+  stage: deploy
+  script:
+    - kubectl -n nas rollout restart deploy/vnc-http
+    - kubectl -n nas rollout status --timeout=1h deploy/vnc-http
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"

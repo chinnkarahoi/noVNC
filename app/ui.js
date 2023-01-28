@@ -16,6 +16,7 @@ import KeyTable from "../core/input/keysym.js";
 import keysyms from "../core/input/keysymdef.js";
 import Keyboard from "../core/input/keyboard.js";
 import RFB from "../core/rfb.js";
+import WebAudio from "../core/webaudio.js";
 import * as WebUtil from "./webutil.js";
 
 const PAGE_TITLE = "noVNC";
@@ -41,6 +42,7 @@ const UI = {
     inhibitReconnect: true,
     reconnectCallback: null,
     reconnectPassword: null,
+    webaudio: null,
 
     prime() {
         return WebUtil.initSettings().then(() => {
@@ -179,6 +181,7 @@ const UI = {
         UI.initSetting('compression', 2);
         UI.initSetting('shared', true);
         UI.initSetting('view_only', false);
+        UI.initSetting('audio', true);
         UI.initSetting('show_dot', false);
         UI.initSetting('path', 'websockify');
         UI.initSetting('repeaterID', '');
@@ -203,6 +206,20 @@ const UI = {
                         children[j].label = labels[i];
                         break;
                     }
+                }
+            }
+        }
+    },
+
+    toggleAudio() {
+        console.log('here');
+        const audio = UI.getSetting('audio');
+        if (audio) {
+            UI.webaudio.start();
+        } else {
+            if(UI.webaudio !== null) {
+                if (UI.webaudio.connected) {
+                    UI.webaudio.stop();
                 }
             }
         }
@@ -366,6 +383,8 @@ const UI = {
         UI.addSettingChangeHandler('shared');
         UI.addSettingChangeHandler('view_only');
         UI.addSettingChangeHandler('view_only', UI.updateViewOnly);
+        UI.addSettingChangeHandler('audio');
+        UI.addSettingChangeHandler('audio', UI.updateEnableAudio);
         UI.addSettingChangeHandler('show_dot');
         UI.addSettingChangeHandler('show_dot', UI.updateShowDotCursor);
         UI.addSettingChangeHandler('host');
@@ -863,6 +882,7 @@ const UI = {
         UI.updateSetting('compression');
         UI.updateSetting('shared');
         UI.updateSetting('view_only');
+        UI.updateSetting('audio');
         UI.updateSetting('path');
         UI.updateSetting('repeaterID');
         UI.updateSetting('logging');
@@ -1044,7 +1064,8 @@ const UI = {
         UI.rfb = new RFB(document.getElementById('noVNC_container'), url,
                          { shared: UI.getSetting('shared'),
                            repeaterID: UI.getSetting('repeaterID'),
-                           credentials: { password: password } });
+                           credentials: { password: password },
+                           wsProtocols: ["binary"] });
         UI.rfb.addEventListener("connect", UI.connectFinished);
         UI.rfb.addEventListener("disconnect", UI.disconnectFinished);
         UI.rfb.addEventListener("serververification", UI.serverVerify);
@@ -1060,6 +1081,7 @@ const UI = {
         UI.rfb.resizeSession = UI.getSetting('resize') === 'remote';
         UI.rfb.qualityLevel = parseInt(UI.getSetting('quality'));
         UI.rfb.compressionLevel = parseInt(UI.getSetting('compression'));
+        UI.rfb.enableAudio = UI.getSetting('audio');
         UI.rfb.showDotCursor = UI.getSetting('show_dot');
 
         UI.updateViewOnly(); // requires UI.rfb
@@ -1074,6 +1096,10 @@ const UI = {
         UI.inhibitReconnect = true;
 
         UI.updateVisualState('disconnecting');
+
+        if(UI.webaudio !== null && UI.webaudio.socket !== null) {
+            UI.webaudio.socket.close();
+        }
 
         // Don't display the connection settings until we're actually disconnected
     },
@@ -1116,6 +1142,19 @@ const UI = {
 
         // Do this last because it can only be used on rendered elements
         UI.rfb.focus();
+
+        let audio_url;
+        // let host = window.location.hostname; 
+        // let port = '32038';
+        if (window.location.protocol === "https:") {
+            audio_url = 'wss';
+        } else {
+            audio_url = 'ws';
+        }
+        audio_url += '://' + window.location.host + '/audiowebsock';
+
+        UI.webaudio = new WebAudio(audio_url);
+        UI.toggleAudio();
     },
 
     disconnectFinished(e) {
@@ -1150,7 +1189,7 @@ const UI = {
             UI.showStatus(_("Disconnected"), 'normal');
         }
 
-        document.title = PAGE_TITLE;
+    document.title = "Pegasus";
 
         UI.openControlbar();
         UI.openConnectPanel();
@@ -1714,6 +1753,12 @@ const UI = {
         }
     },
 
+    updateEnableAudio() {
+        if (!UI.rfb) return;
+        UI.rfb.enableAudio = UI.getSetting('audio');
+        UI.toggleAudio();
+    },
+
     updateShowDotCursor() {
         if (!UI.rfb) return;
         UI.rfb.showDotCursor = UI.getSetting('show_dot');
@@ -1726,7 +1771,7 @@ const UI = {
     updateDesktopName(e) {
         UI.desktopName = e.detail.name;
         // Display the desktop name in the document title
-        document.title = e.detail.name + " - " + PAGE_TITLE;
+    document.title = "Pegasus";
     },
 
     bell(e) {
