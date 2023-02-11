@@ -48,8 +48,8 @@ function handleError(event, err) {
             msg.appendChild(div);
         }
 
-        document.getElementById('noVNC_fallback_error')
-            .classList.add("noVNC_open");
+        // document.getElementById('noVNC_fallback_error')
+        //     .classList.add("noVNC_open");
 
     } catch (exc) {
         document.write("noVNC encountered an error.");
