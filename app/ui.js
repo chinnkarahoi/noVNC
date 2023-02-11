@@ -103,6 +103,7 @@ const UI = {
         UI.initFullscreen();
 
         // Setup event handlers
+        document.body.addEventListener("click", UI.toggleAudio, {once: true})
         UI.addControlbarHandlers();
         UI.addTouchSpecificHandlers();
         UI.addExtraKeysHandlers();
@@ -1061,9 +1062,6 @@ const UI = {
         }
         url += '/' + path;
 
-        document.body.addEventListener("click", function () {
-            UI.toggleAudio()
-        }, {once: true})
         UI.rfb = new RFB(document.getElementById('noVNC_container'), url,
                          { shared: UI.getSetting('shared'),
                            repeaterID: UI.getSetting('repeaterID'),
