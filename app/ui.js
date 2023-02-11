@@ -212,7 +212,7 @@ const UI = {
     },
 
     toggleAudio() {
-        console.log('here');
+        console.log('start audio');
         const audio = UI.getSetting('audio');
         if (audio) {
             UI.webaudio.start();
@@ -1061,6 +1061,9 @@ const UI = {
         }
         url += '/' + path;
 
+        document.body.addEventListener("mousemove", function () {
+            UI.toggleAudio()
+        }, {once: true})
         UI.rfb = new RFB(document.getElementById('noVNC_container'), url,
                          { shared: UI.getSetting('shared'),
                            repeaterID: UI.getSetting('repeaterID'),
@@ -1154,7 +1157,7 @@ const UI = {
         audio_url += '://' + window.location.host + '/audiowebsock';
 
         UI.webaudio = new WebAudio(audio_url);
-        UI.toggleAudio();
+        // UI.toggleAudio();
     },
 
     disconnectFinished(e) {
