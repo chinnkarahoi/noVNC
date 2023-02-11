@@ -1061,7 +1061,7 @@ const UI = {
         }
         url += '/' + path;
 
-        document.body.addEventListener("mousemove", function () {
+        document.body.addEventListener("click", function () {
             UI.toggleAudio()
         }, {once: true})
         UI.rfb = new RFB(document.getElementById('noVNC_container'), url,
